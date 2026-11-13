@@ -31,6 +31,10 @@ cantest = "cantest.__main__:main"
 [tool.setuptools.packages.find]
 include = ["cantest*"]
 
+[tool.setuptools.package-data]
+# 前端单页随包走，否则 pip 装完 /ui 是 404
+cantest = ["ui/*.html"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

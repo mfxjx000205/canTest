@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import time
 from typing import Any, Dict, List, Optional
@@ -79,3 +80,36 @@ def all_stats(manager: BusManager = Depends(get_manager)) -> Dict[str, Any]:
             }
         )
     return ok({"count": len(items), "items": items})
+
+
+@router.get("/recordings", summary="列出录制目录里的文件")
+def list_recordings(
+    limit: int = Query(default=200, ge=1, le=2000),
+) -> Dict[str, Any]:
+    """给前端「选一个文件回放」用。
+
+    只读录制目录、不递归，避免变成一个能列举任意路径的接口。
+    """
+    from ..recorder import RECORD_DIR
+
+    items: List[Dict[str, Any]] = []
+    if os.path.isdir(RECORD_DIR):
+        for name in os.listdir(RECORD_DIR):
+            full = os.path.join(RECORD_DIR, name)
+            if not os.path.isfile(full):
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            items.append(
+                {
+                    "name": name,
+                    "path": full,
+                    "size": st.st_size,
+                    "mtime": st.st_mtime,
+                }
+            )
+    items.sort(key=lambda item: item["mtime"], reverse=True)
+    return ok({"dir": RECORD_DIR, "count": len(items), "files": items[:limit]})
+

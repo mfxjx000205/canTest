@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict
 
@@ -15,7 +16,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .. import __version__
 from ..errors import CanTestError
@@ -26,6 +27,11 @@ from . import routes_async, routes_bus, routes_frame, routes_system, ws
 logger = logging.getLogger("cantest")
 
 API_PREFIX = "/api/v1"
+
+# 前端是个单文件页面，随包一起分发（见 pyproject 的 package-data）。
+UI_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui", "index.html"
+)
 
 DESCRIPTION = """
 CAN 总线测试控制面。底层用 python-can 驱动硬件（Windows 上默认 PCAN，
@@ -126,9 +132,17 @@ def create_app() -> FastAPI:
             "name": "CANtest",
             "version": __version__,
             "api_prefix": API_PREFIX,
+            "ui": "/ui",
             "docs": "/docs",
             "health": f"{API_PREFIX}/health",
         }
+
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/", include_in_schema=False)
+    def ui_index() -> FileResponse:
+        # 前端只有这一个文件，用 FileResponse 直接吐出去即可。
+        # 不挂 StaticFiles 是因为那样得额外维护目录映射，收益不值当。
+        return FileResponse(UI_FILE, media_type="text/html; charset=utf-8")
 
     return app
 

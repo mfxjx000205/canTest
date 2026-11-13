@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>CANtest 控制台</title>
+<style>
+  :root {
+    --bg: #0d1015;
+    --panel: #151922;
+    --panel2: #1b202b;
+    --line: #252c39;
+    --line2: #323a49;
+    --text: #d8dfea;
+    --dim: #7c8698;
+    --dim2: #5c6678;
+    --accent: #4ea1ff;
+    --rx: #4ea1ff;
+    --tx: #f0a33c;
+    --ok: #43d19e;
+    --warn: #f0b73c;
+    --err: #ff5f5f;
+    --mono: "Cascadia Mono", "JetBrains Mono", Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.45 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  input, select {
+    background: #10141b;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    padding: 5px 8px;
+    outline: none;
+    min-width: 0;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type=checkbox] { width: 14px; height: 14px; accent-color: var(--accent); vertical-align: -2px; }
+  label.chk { display: inline-flex; align-items: center; gap: 5px; color: var(--dim); cursor: pointer; user-select: none; }
+  label.chk:hover { color: var(--text); }
+  button {
+    background: var(--panel2);
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: .12s;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) { background: #232a37; border-color: #3f4959; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .38; cursor: not-allowed; }
+  button.primary { background: #1d4e86; border-color: #2a6cb4; color: #e8f2ff; }
+  button.primary:hover:not(:disabled) { background: #235b9c; }
+  button.danger { color: #ffb2b2; border-color: #5a2f34; background: #2a181b; }
+  button.danger:hover:not(:disabled) { background: #361d21; }
+  button.sm { padding: 3px 8px; font-size: 12px; }
+
+  /* ---------- 布局 ---------- */
+  .app { display: flex; flex-direction: column; height: 100%; }
+
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 14px; height: 48px; flex: none;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: baseline; gap: 8px; font-weight: 600; letter-spacing: .3px; }
+  .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim2); align-self: center; }
+  .brand .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(67,209,158,.7); }
+  .brand small { color: var(--dim2); font-weight: 400; font-size: 11px; }
+  header .spacer { flex: 1; }
+  header .addr { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+  header .addr input { width: 210px; font-family: var(--mono); font-size: 12px; }
+
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  aside {
+    width: 296px; flex: none; display: flex; flex-direction: column;
+    background: var(--panel); border-right: 1px solid var(--line);
+    overflow-y: auto;
+  }
+  .sec { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .sec h3 {
+    margin: 0 0 10px; font-size: 11px; font-weight: 600; letter-spacing: 1.4px;
+    text-transform: uppercase; color: var(--dim2);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .field > span { font-size: 11px; color: var(--dim); }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row > * { flex: 1; }
+  .row.tight > * { flex: none; }
+  .row.tight > .grow { flex: 1; }
+
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  .stats { display: flex; flex: none; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .stat { padding: 7px 16px; border-right: 1px solid var(--line); min-width: 90px; }
+  .stat b { display: block; font-family: var(--mono); font-size: 15px; font-weight: 600; line-height: 1.3; }
+  .stat span { font-size: 10px; color: var(--dim2); letter-spacing: .8px; text-transform: uppercase; }
+  .stat.state b { font-size: 12px; letter-spacing: .5px; }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 8px; flex: none;
+    padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .toolbar .grow { flex: 1; }
+  .toolbar .hint { color: var(--dim2); font-size: 11px; }
+
+  .tablewrap { flex: 1; overflow: auto; min-height: 0; background: var(--bg); }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: #12161d; color: var(--dim2);
+    font: 600 10.5px/1 "Segoe UI", sans-serif; letter-spacing: 1px; text-transform: uppercase;
+    text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line2);
+    white-space: nowrap;
+  }
+  tbody td { padding: 2px 10px; border-bottom: 1px solid #14181f; white-space: nowrap; }
+  tbody tr:hover { background: #182030; }
+  tbody tr.tx td { background: rgba(240,163,60,.055); }
+  tbody tr.tx:hover { background: rgba(240,163,60,.11); }
+  tbody tr.err td { background: rgba(255,95,95,.12); }
+  td.t { color: var(--dim2); text-align: right; width: 74px; }
+  td.id { color: #a9d3ff; }
+  td.data { color: #bfe6c8; letter-spacing: .3px; }
+  td.num { color: var(--dim); text-align: right; }
+  .pill {
+    display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px;
+    font-weight: 600; letter-spacing: .5px; line-height: 15px;
+  }
+  .pill.rx { background: rgba(78,161,255,.16); color: #8dc2ff; }
+  .pill.tx { background: rgba(240,163,60,.18); color: #f5c078; }
+  .pill.ext { background: #232a37; color: var(--dim); font-weight: 400; }
+  .empty { color: var(--dim2); padding: 40px; text-align: center; font-family: "Segoe UI", sans-serif; }
+
+  /* ---------- 下部面板 ---------- */
+  .pane { flex: none; height: 268px; display: flex; flex-direction: column; border-top: 1px solid var(--line); background: var(--panel); }
+  .tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); flex: none; }
+  .tabs button {
+    background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 8px 14px; color: var(--dim); font-size: 12.5px;
+  }
+  .tabs button:hover { color: var(--text); background: #1a1f29; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tabbody { flex: 1; overflow: auto; padding: 12px 14px; }
+  .tabbody[hidden] { display: none; }
+  .grid { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: flex-end; }
+  .grid .field { margin: 0; min-width: 90px; }
+  .grid .field.wide { min-width: 260px; flex: 1; }
+  .grid .field.narrow { min-width: 70px; }
+  .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+  .banner {
+    display: none; align-items: center; gap: 8px; flex: none;
+    padding: 6px 14px; font-size: 12px;
+    background: #2a2216; color: #f0c675; border-bottom: 1px solid #3d3220;
+  }
+  .banner.show { display: flex; }
+  .banner.danger { background: #2a1618; color: #ff9b9b; border-bottom-color: #4a2226; }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12px; }
+  .kv dt { color: var(--dim2); }
+  .kv dd { margin: 0; font-family: var(--mono); color: var(--text); word-break: break-all; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #1a2029; border: 1px solid var(--line2); border-radius: 12px;
+    padding: 2px 6px 2px 10px; font-family: var(--mono); font-size: 11.5px; color: #a9d3ff;
+  }
+  .chip button { background: none; border: none; color: var(--dim); padding: 0 3px; font-size: 13px; line-height: 1; }
+  .chip button:hover { color: var(--err); }
+
+  .filelist { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .filelist td { padding: 4px 8px; border-bottom: 1px solid #1c222c; font-family: var(--mono); }
+  .filelist tr.sel td { background: #1b2a3e; }
+  .filelist tr:hover td { background: #1a2029; cursor: pointer; }
+
+  footer {
+    flex: none; display: flex; align-items: center; gap: 12px;
+    height: 26px; padding: 0 14px; font-size: 11.5px;
+    background: #0a0d12; border-top: 1px solid var(--line); color: var(--dim2);
+    font-family: var(--mono);
+  }
+  footer .msg { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  footer .msg.err { color: #ff9b9b; }
+  footer .msg.ok { color: var(--ok); }
+
+  .sessions { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
+  .sess {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+    border: 1px solid var(--line); border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  .sess:hover { border-color: var(--line2); background: #1a2029; }
+  .sess.active { border-color: #2a6cb4; background: #16283c; }
+  .sess .name { font-family: var(--mono); font-size: 11.5px; }
+  .sess .meta { margin-left: auto; color: var(--dim2); font-size: 10.5px; }
+  .muted { color: var(--dim2); }
+  .mono { font-family: var(--mono); }
+  hr.sep { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><span class="dot" id="linkDot"></span>CANtest <small id="verLabel">console</small></div>
+    <div class="addr">
+      <span>服务</span>
+      <input id="baseUrl" spellcheck="false" placeholder="http://127.0.0.1:8700">
+      <button class="sm" id="btnHealth">连接</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="sm" id="btnDocs">接口文档</button>
+  </header>
+
+  <div class="body">
+    <aside>
+      <div class="sec">
+        <h3>打开通道</h3>
+        <div class="field"><span>后端</span>
+          <select id="iface"><option value="auto">auto（默认后端）</option></select>
+        </div>
+        <div class="field"><span>通道</span>
+          <input id="channel" list="chList" placeholder="PCAN_USBBUS1 / vcan0 / cantest0">
+          <datalist id="chList"></datalist>
+        </div>
+        <div class="row">
+          <div class="field"><span>波特率</span><input id="bitrate" value="1000000" class="mono"></div>
+          <div class="field"><span>时钟 MHz</span><input id="clock" value="80" class="mono"></div>
+        </div>
+        <div class="field"><span>采样点</span><input id="samplePoint" value="0.8" class="mono"></div>
+        <div class="row tight" style="margin:10px 0 10px">
+          <label class="chk grow"><input type="checkbox" id="listenOnly" checked>只监听（不发 ACK）</label>
+          <label class="chk"><input type="checkbox" id="fdMode">FD</label>
+        </div>
+        <div class="actions">
+          <button class="primary" id="btnOpen" style="flex:1">打开通道</button>
+          <button class="danger" id="btnClose">关闭</button>
+        </div>
+        <div class="sessions" id="sessions"></div>
+      </div>
+
+      <div class="sec">
+        <h3>会话状态</h3>
+        <dl class="kv">
+          <dt>ID</dt><dd id="kvId">—</dd>
+          <dt>通道</dt><dd id="kvCh">—</dd>
+          <dt>状态</dt><dd id="kvState">—</dd>
+          <dt>位定时</dt><dd id="kvTiming">—</dd>
+          <dt>过滤器</dt><dd id="kvHw">—</dd>
+        </dl>
+        <div class="actions" style="margin-top:10px">
+          <button class="sm" id="btnFlush">清缓冲</button>
+          <button class="sm" id="btnReset">复位</button>
+          <button class="sm" id="btnRefresh">刷新</button>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <div class="banner" id="banner"></div>
+
+      <div class="stats">
+        <div class="stat"><b id="sRxFps">0</b><span>rx fps</span></div>
+        <div class="stat"><b id="sTxFps">0</b><span>tx fps</span></div>
+        <div class="stat"><b id="sLoad">0%</b><span>bus load</span></div>
+        <div class="stat"><b id="sRxTotal">0</b><span>rx total</span></div>
+        <div class="stat"><b id="sTxTotal">0</b><span>tx total</span></div>
+        <div class="stat"><b id="sErr">0</b><span>errors</span></div>
+        <div class="stat state"><b id="sState">—</b><span>state</span></div>
+        <div class="stat"><b id="sIds">0</b><span>unique ids</span></div>
+      </div>
+
+      <div class="toolbar">
+        <button class="sm" id="btnPause">暂停</button>
+        <button class="sm" id="btnClear">清屏</button>
+        <button class="sm" id="btnExport">导出 CSV</button>
+        <span class="hint" id="streamHint">未连接</span>
+        <span class="grow"></span>
+        <button class="sm" id="btnPoll">轮询读一包</button>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="t">time</th><th>dir</th><th>id</th><th>type</th>
+              <th>dlc</th><th>data</th><th style="text-align:right">period</th><th style="text-align:right">count</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty" id="emptyHint">尚未收到报文。先在左侧打开通道，或点「轮询读一包」。</div>
+      </div>
+
+      <div class="pane">
+        <div class="tabs">
+          <button data-tab="send" class="active">发送</button>
+          <button data-tab="filter">过滤</button>
+          <button data-tab="record">录波 / 回放</button>
+          <button data-tab="log">日志</button>
+        </div>
+
+        <!-- 发送 -->
+        <div class="tabbody" id="tab-send">
+          <div class="grid">
+            <div class="field narrow"><span>ID</span><input id="txId" class="mono" value="0x181" placeholder="0x181"></div>
+            <div class="field wide"><span>数据（hex，可空格分隔）</span><input id="txData" class="mono" value="01 02 03 04"></div>
+            <div class="field narrow"><span>重复</span><input id="txRepeat" class="mono" value="1"></div>
+            <div class="field narrow"><span>间隔 ms</span><input id="txGap" class="mono" value="0"></div>
+            <div class="field">
+              <span>帧类型</span>
+              <div class="row tight" style="gap:12px;padding-top:4px">
+                <label class="chk"><input type="checkbox" id="txExt">扩展</label>
+                <label class="chk"><input type="checkbox" id="txFd">FD</label>
+                <label class="chk"><input type="checkbox" id="txBrs">BRS</label>
+                <label class="chk"><input type="checkbox" id="txRtr">远程</label>
+              </div>
+            </div>
+          </div>
+          <div class="actions" style="margin-top:12px">
+            <button class="primary" id="btnSend">发送</button>
+            <button id="btnTransact">发送并等响应</button>
+            <span class="muted">|</span>
+            <span class="muted">期望 ID</span>
+            <input id="txExpectId" class="mono" value="0x181" style="width:100px">
+            <span class="muted">超时 ms</span>
+            <input id="txTimeout" class="mono" value="1000" style="width:70px">
+            <span class="grow"></span>
+            <button class="sm" id="btnCyclic">周期发送</button>
+            <button class="sm" id="btnCyclicStop">停止周期</button>
+          </div>
+          <div class="kv" id="txResult" style="margin-top:12px"></div>
+        </div>
+
+        <!-- 过滤 -->
+        <div class="tabbody" id="tab-filter" hidden>
+          <div class="grid">
+            <div class="field narrow"><span>can_id</span><input id="fltId" class="mono" value="0x181"></div>
+            <div class="field narrow"><span>掩码</span><input id="fltMask" class="mono" value="0x7FF"></div>
+            <div class="field narrow"><span>帧类型</span>
+              <select id="fltExt"><option value="">不限</option><option value="false">标准</option><option value="true">扩展</option></select>
+            </div>
+            <div class="actions"><button id="btnAddFilter">添加</button></div>
+          </div>
+          <div class="chips" id="filterChips"></div>
+          <div class="actions" style="margin-top:12px">
+            <button class="primary" id="btnApplyFilter">应用到会话</button>
+            <button class="danger" id="btnClearFilter">清除全部</button>
+            <span class="muted" style="margin-left:8px">语义：<span class="mono">(id &amp; mask) == (can_id &amp; mask)</span></span>
+          </div>
+          <p class="muted" style="margin-top:10px;line-height:1.7">
+            过滤器作用在收帧入口，因此实时流、轮询、历史查询都会被它裁剪。<br>
+            只对新到达的帧生效，缓冲区里已有的帧还在——想让统计干净，先点左侧「清缓冲」。
+          </p>
+        </div>
+
+        <!-- 录波 -->
+        <div class="tabbody" id="tab-record" hidden>
+          <div class="grid">
+            <div class="field narrow"><span>格式</span>
+              <select id="recFormat">
+                <option value="jsonl">jsonl</option><option value="csv">csv</option>
+                <option value="asc">asc</option><option value="blf">blf</option>
+              </select>
+            </div>
+            <div class="field wide"><span>输出路径（留空自动生成到 recordings/）</span>
+              <input id="recPath" class="mono" placeholder="留空即可">
+            </div>
+            <div class="actions">
+              <button class="primary" id="btnRecStart">开始录制</button>
+              <button class="danger" id="btnRecStop">停止</button>
+            </div>
+          </div>
+          <div class="kv" id="recInfo" style="margin-top:10px"></div>
+
+          <hr class="sep">
+          <div class="grid">
+            <div class="field wide"><span>回放文件（点下方列表选择）</span>
+              <input id="rpPath" class="mono" placeholder="recordings/xxx.jsonl">
+            </div>
+            <div class="field narrow"><span>速率</span><input id="rpSpeed" class="mono" value="1"></div>
+            <div class="field narrow"><span>固定间隔 ms</span><input id="rpGap" class="mono" placeholder="按原时间戳"></div>
+            <div class="field narrow"><span>次数</span><input id="rpCount" class="mono" value="1"></div>
+            <div class="actions">
+              <label class="chk"><input type="checkbox" id="rpLoop">循环</label>
+              <button id="btnReplay">回放</button>
+              <button class="danger" id="btnReplayStop">停止</button>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+            <span class="muted">录制文件</span>
+            <button class="sm" id="btnRecList">刷新列表</button>
+            <span class="grow"></span>
+            <span class="muted" id="rpJobs"></span>
+          </div>
+          <table class="filelist" id="recFiles"><tbody></tbody></table>
+        </div>
+
+        <!-- 日志 -->
+        <div class="tabbody" id="tab-log" hidden>
+          <div class="actions" style="margin-bottom:8px">
+            <button class="sm" id="btnLogClear">清空</button>
+            <span class="muted">记录每次请求与错误，便于对照接口行为</span>
+          </div>
+          <pre class="mono" id="logBox" style="margin:0;white-space:pre-wrap;font-size:11.5px;color:#9aa6b8;line-height:1.6"></pre>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <footer>
+    <span id="ftConn">未连接</span>
+    <span class="msg" id="ftMsg">就绪</span>
+    <span id="ftRows">0 帧</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var MAX_ROWS = 600;      // 表格里保留的行数上限
+  var FLUSH_MS = 100;      // 渲染节流：500 fps 时每 100ms 也才 50 行
+
+  var S = {
+    base: "",
+    busId: null,
+    ws: null,
+    wsOpen: false,
+    paused: false,
+    pending: [],
+    rowCount: 0,
+    idStat: new Map(),     // id -> {count, last, period}
+    filters: [],
+    sessions: [],
+    lastStats: null
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var el = function (tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+
+  // ---------------------------------------------------------------- 基础设施
+  function log(msg, kind) {
+    var box = $("logBox");
+    var t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    box.appendChild(document.createTextNode("[" + t + "] " + msg + "\n"));
+    if (box.childNodes.length > 400) box.removeChild(box.firstChild);
+    if (kind === "err") { box.lastChild.className = ""; }
+    if (!box.hidden) box.scrollTop = box.scrollHeight;
+  }
+
+  function status(msg, kind) {
+    var n = $("ftMsg");
+    n.textContent = msg;
+    n.className = "msg" + (kind ? " " + kind : "");
+  }
+
+  function baseUrl() {
+    return S.base.replace(/\/+$/, "");
+  }
+
+  async function api(path, opts) {
+    opts = opts || {};
+    var url = baseUrl() + "/api/v1" + path;
+    var init = { method: opts.method || "GET", headers: { "Content-Type": "application/json" } };
+    if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+    var res = await fetch(url, init);
+    var json = null;
+    try { json = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
+    if (!json || json.ok !== true) {
+      var err = json && json.error;
+      var detail = "";
+      if (err && err.detail) {
+        try { detail = " " + JSON.stringify(err.detail); } catch (e) { detail = ""; }
+      }
+      var text = (err && (err.message || err.code)) || res.statusText || "请求失败";
+      log(opts.method || "GET" + " " + path + " -> " + res.status + " " + text + detail, "err");
+      throw new Error(res.status + " " + text);
+    }
+    log((opts.method || "GET") + " " + path + " -> " + res.status);
+    return json;
+  }
+
+  function guarded(fn) {
+    return async function () {
+      try {
+        await fn.apply(null, arguments);
+      } catch (e) {
+        status(e.message, "err");
+      }
+    };
+  }
+
+  // ---------------------------------------------------------------- 健康检查
+  async function checkHealth(quiet) {
+    try {
+      var r = await api("/health");
+      $("linkDot").classList.add("on");
+      $("verLabel").textContent = "v" + r.data.version;
+      $("ftConn").textContent = "已连接 " + baseUrl();
+      if (!quiet) status("服务正常，版本 " + r.data.version, "ok");
+      await loadInterfaces();
+      await refreshSessions();
+      return true;
+    } catch (e) {
+      $("linkDot").classList.remove("on");
+      $("ftConn").textContent = "未连接";
+      if (!quiet) status("连不上服务：" + e.message + "（服务起了吗？）", "err");
+      return false;
+    }
+  }
+
+  async function loadInterfaces() {
+    var r = await api("/interfaces");
+    var sel = $("iface");
+    var keep = sel.value;
+    sel.innerHTML = "";
+    sel.appendChild(new Option("auto（默认后端）", "auto"));
+    (r.data || []).forEach(function (it) {
+      if (!it.importable) return;
+      var mark = it.is_default ? "（默认）" : "";
+      sel.appendChild(new Option(it.name + mark, it.name));
+    });
+    if (keep) sel.value = keep;
+    await loadChannels(sel.value);
+  }
+
+  async function loadChannels(iface) {
+    try {
+      var r = await api("/channels?interface=" + encodeURIComponent(iface || "auto"));
+      var list = $("chList");
+      list.innerHTML = "";
+      (r.data.channels || []).forEach(function (c) {
+        var opt = new Option(c.channel + (c.probed === false ? "（未探测）" : ""), c.channel);
+        list.appendChild(opt);
+      });
+      if (!r.data.channels.length) log("后端 " + iface + " 没有枚举到通道");
+    } catch (e) { /* 枚举失败不阻塞 */ }
+  }
+
+  // ---------------------------------------------------------------- 会话
+  async function refreshSessions() {
+    var r = await api("/buses");
+    S.sessions = r.data || [];
+    // 刷新页面后自动接上第一条会话，省得每次手动点一遍。
+    // 只在首次加载时做，避免用户刚关掉又被自动选回去。
+    if (!S.busId && S.sessions.length && !S.bootstrapped) {
+      S.bootstrapped = true;
+      S.busId = S.sessions[0].id;
+      connectWs();
+    }
+    var box = $("sessions");
+    box.innerHTML = "";
+    if (!S.sessions.length) {
+      box.appendChild(el("div", "muted", "还没有打开的通道"));
+    }
+    S.sessions.forEach(function (s) {
+      var d = el("div", "sess" + (s.id === S.busId ? " active" : ""));
+      d.appendChild(el("span", "name", s.id));
+      var meta = s.interface + " · " + (s.config.listen_only ? "只监听" : "可发帧");
+      d.appendChild(el("span", "meta", meta));
+      d.onclick = function () { selectSession(s.id); };
+      box.appendChild(d);
+    });
+    if (S.busId) await refreshSessionDetail();
+  }
+
+  async function selectSession(id) {
+    if (S.busId === id) return;
+    S.busId = id;
+    closeWs();
+    clearTable();
+    await refreshSessions();
+    await connectWs();
+  }
+
+  async function refreshSessionDetail() {
+    if (!S.busId) {
+      ["kvId", "kvCh", "kvState", "kvTiming", "kvHw"].forEach(function (k) { $(k).textContent = "—"; });
+      return;
+    }
+    try {
+      var r = await api("/buses/" + S.busId);
+      var b = r.data;
+      $("kvId").textContent = b.id;
+      $("kvCh").textContent = b.interface + " / " + b.channel;
+      $("kvState").textContent = b.state;
+      var t = b.timing || {};
+      $("kvTiming").textContent = t.brp
+        ? "brp " + t.brp + " · tseg1 " + t.tseg1 + " · tseg2 " + t.tseg2 + " · " + (t.bitrate || "?") + " bps"
+        : "—";
+      $("kvHw").textContent = (b.filters && b.filters.length)
+        ? b.filters.length + " 条" + (b.hw_filters_active ? "（硬件生效）" : "（仅软件）")
+        : "无";
+      S.filters = (b.filters || []).slice();
+      renderChips();
+
+      var lo = b.config.listen_only;
+      var real = b.interface === "pcan" || b.interface === "socketcan" || b.interface === "kvaser" || b.interface === "vector";
+      var banner = $("banner");
+      if (real && !lo) {
+        banner.className = "banner show danger";
+        banner.textContent = "⚠ 当前会话可在真实总线上发帧（listen_only=false）。确认这条线不是在役总线，或已接好双通道自环。";
+      } else if (lo) {
+        banner.className = "banner show";
+        banner.textContent = "只监听模式：不产生 ACK、不发帧，对在役总线安全；但无法验证发送链路。";
+      } else {
+        banner.className = "banner";
+      }
+    } catch (e) { /* 会话可能已被关闭 */ }
+  }
+
+  var btnOpen = $("btnOpen");
+  btnOpen.onclick = guarded(async function () {
+    var cfg = {
+      interface: $("iface").value || "auto",
+      channel: $("channel").value.trim() || null,
+      bitrate: Number($("bitrate").value) || 1000000,
+      f_clock_mhz: Number($("clock").value) || 80,
+      sample_point: Number($("samplePoint").value) || 0.8,
+      listen_only: $("listenOnly").checked,
+      fd: $("fdMode").checked
+    };
+    if (!cfg.channel) delete cfg.channel;
+    var r = await api("/buses", { method: "POST", body: cfg });
+    status("通道已打开：" + r.data.id, "ok");
+    S.busId = r.data.id;
+    clearTable();
+    await refreshSessions();
+    await connectWs();
+  });
+
+  $("btnClose").onclick = guarded(async function () {
+    if (!S.busId) return status("没有选中的会话", "err");
+    var id = S.busId;
+    closeWs();
+    await api("/buses/" + id, { method: "DELETE" });
+    S.busId = null;
+    clearTable();
+    status("已关闭 " + id, "ok");
+    await refreshSessions();
+  });
+
+  ["btnFlush", "btnReset", "btnRefresh"].forEach(function (id) {
+    $(id).onclick = guarded(async function () {
+      if (!S.busId) return status("先打开通道", "err");
+      if (id === "btnFlush") {
+        var r = await api("/buses/" + S.busId + "/flush", { method: "POST" });
+        clearTable();
+        status("缓冲已清空，丢弃 " + r.data.dropped + " 帧", "ok");
+      } else if (id === "btnReset") {
+        var r2 = await api("/buses/" + S.busId + "/reset", { method: "POST" });
+        status("复位：" + (r2.data.reset ? "成功" : "未执行") + "，状态 " + r2.data.state, r2.data.reset ? "ok" : "err");
+      } else {
+        await refreshSessions();
+        status("已刷新");
+      }
+    });
+  });
+
+  $("iface").onchange = function () { loadChannels(this.value); };
+
+  // ---------------------------------------------------------------- 实时流
+  function connectWs() {
+    if (!S.busId) return;
+    var wsBase = baseUrl().replace(/^http/, "ws");
+    var url = wsBase + "/api/v1/ws/buses/" + encodeURIComponent(S.busId);
+    var ws = new WebSocket(url);
+    S.ws = ws;
+
+    ws.onopen = function () {
+      S.wsOpen = true;
+      $("streamHint").textContent = "实时流已连接：" + S.busId;
+      status("实时流已连接", "ok");
+      log("WS 已连接 " + url);
+      // 保活：服务端会把 ping 回成 pong
+      if (S.pingTimer) clearInterval(S.pingTimer);
+      S.pingTimer = setInterval(function () {
+        if (ws.readyState === 1) ws.send("ping");
+      }, 20000);
+    };
+
+    ws.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (!msg.ok) {
+        status("WS 错误：" + (msg.error && msg.error.message), "err");
+        return;
+      }
+      var d = msg.data;
+      if (!d) return;
+      if (d.type === "frame") {
+        if (!S.paused) S.pending.push(d.frame);
+      } else if (d.type === "hello") {
+        $("streamHint").textContent = "实时流：" + d.bus_id + " · " + d.channel;
+      } else if (d.type === "bus_closed") {
+        status("会话已关闭，实时流断开", "err");
+      }
+    };
+
+    ws.onclose = function () {
+      S.wsOpen = false;
+      if (S.pingTimer) clearInterval(S.pingTimer);
+      if (S.busId) $("streamHint").textContent = "实时流已断开";
+      log("WS 断开");
+    };
+
+    ws.onerror = function () {
+      status("实时流连接失败（服务没起或会话已关闭）", "err");
+    };
+  }
+
+  function closeWs() {
+    if (S.pingTimer) clearInterval(S.pingTimer);
+    if (S.ws) {
+      try { S.ws.close(); } catch (e) { /* ignore */ }
+      S.ws = null;
+    }
+    S.wsOpen = false;
+  }
+
+  // ---------------------------------------------------------------- 帧表
+  function twoDigits(n) { return (n < 16 ? "0" : "") + n.toString(16).toUpperCase(); }
+
+  function spacedHex(hex) {
+    if (!hex) return "";
+    var out = [];
+    for (var i = 0; i < hex.length; i += 2) out.push(hex.slice(i, i + 2).toUpperCase());
+    return out.join(" ");
+  }
+
+  function fmtTime(f) {
+    var d = new Date((f.timestamp || 0) * 1000);
+    var ms = String(d.getMilliseconds()).padStart(3, "0");
+    return d.toLocaleTimeString("zh-CN", { hour12: false }) + "." + ms;
+  }
+
+  function fmtSize(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(2) + " MB";
+  }
+
+  function noteFrame(f) {
+    var st = S.idStat.get(f.id);
+    var now = f.timestamp || Date.now() / 1000;
+    if (!st) {
+      st = { count: 0, last: null, period: null };
+      S.idStat.set(f.id, st);
+    }
+    st.count += 1;
+    if (st.last != null) {
+      var delta = (now - st.last) * 1000;
+      if (delta > 0 && delta < 60000) {
+        st.period = st.period == null ? delta : st.period * 0.7 + delta * 0.3;
+      }
+    }
+    st.last = now;
+    return st;
+  }
+
+  function flushRows() {
+    if (!S.pending.length) return;
+    var batch = S.pending;
+    S.pending = [];
+
+    // 一次进来太多就别逐行拼，只留最后一批，避免 DOM 被冲垮
+    if (batch.length > MAX_ROWS) batch = batch.slice(-MAX_ROWS);
+
+    var tbody = $("rows");
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < batch.length; i++) {
+      var f = batch[i];
+      var st = noteFrame(f);
+      var tr = document.createElement("tr");
+      if (!f.is_rx) tr.className = "tx";
+      if (f.is_error_frame) tr.className = "err";
+
+      var tdT = el("td", "t", fmtTime(f));
+      var tdDir = el("td");
+      var pill = el("span", "pill " + (f.is_rx ? "rx" : "tx"), f.is_rx ? "RX" : "TX");
+      tdDir.appendChild(pill);
+      var tdId = el("td", "id", f.id_hex || ("0x" + f.id.toString(16).toUpperCase()));
+      var tdType = el("td");
+      if (f.is_extended_id) tdType.appendChild(el("span", "pill ext", "EXT"));
+      if (f.is_fd) tdType.appendChild(el("span", "pill ext", "FD"));
+      if (f.is_remote_frame) tdType.appendChild(el("span", "pill ext", "RTR"));
+      if (!tdType.childNodes.length) tdType.textContent = "—";
+      var tdDlc = el("td", "num", String(f.dlc));
+      var tdData = el("td", "data", spacedHex(f.data));
+      tdData.title = spacedHex(f.data);
+      var tdPeriod = el("td", "num", st.period == null ? "" : st.period.toFixed(1));
+      var tdCount = el("td", "num", String(st.count));
+
+      tr.appendChild(tdT); tr.appendChild(tdDir); tr.appendChild(tdId); tr.appendChild(tdType);
+      tr.appendChild(tdDlc); tr.appendChild(tdData); tr.appendChild(tdPeriod); tr.appendChild(tdCount);
+
+      // 点一行就把这帧的 ID / 数据填进发送区，改造报文最省事
+      tr.onclick = (function (frame) {
+        return function () { fillTx(frame); };
+      })(f);
+
+      frag.appendChild(tr);
+    }
+    tbody.appendChild(frag);
+    S.rowCount += batch.length;
+
+    var over = S.rowCount - MAX_ROWS;
+    if (over > 0) {
+      var first = tbody.firstChild;
+      var removed = 0;
+      while (first && removed < over) {
+        var next = first.nextSibling;
+        tbody.removeChild(first);
+        first = next;
+        removed++;
+      }
+      S.rowCount -= removed;
+    }
+
+    $("emptyHint").style.display = S.rowCount ? "none" : "block";
+    $("ftRows").textContent = S.rowCount + " 帧";
+    $("sIds").textContent = String(S.idStat.size);
+  }
+
+  function clearTable() {
+    $("rows").innerHTML = "";
+    S.pending = [];
+    S.rowCount = 0;
+    S.idStat.clear();
+    $("emptyHint").style.display = "block";
+    $("ftRows").textContent = "0 帧";
+    $("sIds").textContent = "0";
+  }
+
+  function fillTx(f) {
+    $("txId").value = f.id_hex || ("0x" + f.id.toString(16).toUpperCase());
+    $("txData").value = spacedHex(f.data);
+    $("txExt").checked = !!f.is_extended_id;
+    $("txFd").checked = !!f.is_fd;
+    $("txBrs").checked = !!f.bitrate_switch;
+    status("已填入该帧，可直接重发");
+  }
+
+  $("btnPause").onclick = function () {
+    S.paused = !S.paused;
+    this.textContent = S.paused ? "继续" : "暂停";
+    $("streamHint").textContent = S.paused ? "已暂停（帧仍在后台接收，不渲染）" : "实时流运行中";
+  };
+  $("btnClear").onclick = function () { clearTable(); status("已清屏"); };
+
+  $("btnExport").onclick = function () {
+    var rows = $("rows").querySelectorAll("tr");
+    if (!rows.length) return status("表格是空的", "err");
+    var lines = ["time,dir,id,type,dlc,data,period_ms,count"];
+    rows.forEach(function (tr) {
+      var c = tr.children;
+      lines.push([
+        c[0].textContent,
+        c[1].textContent,
+        c[2].textContent,
+        c[3].textContent || "",
+        c[4].textContent,
+        '"' + c[5].textContent + '"',
+        c[6].textContent,
+        c[7].textContent
+      ].join(","));
+    });
+    var blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "cantest-" + new Date().toISOString().replace(/[:.]/g, "-") + ".csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    status("已导出 " + (lines.length - 1) + " 行", "ok");
+  };
+
+  $("btnPoll").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var r = await api("/buses/" + S.busId + "/receive", {
+      method: "POST",
+      body: { count: 50, timeout_ms: 500 }
+    });
+    var frames = r.data.frames || [];
+    frames.forEach(function (f) { S.pending.push(f); });
+    flushRows();
+    status("轮询到 " + frames.length + " 帧（消费式读取，游标已前移）", "ok");
+  });
+
+  setInterval(flushRows, FLUSH_MS);
+
+  // ---------------------------------------------------------------- 统计
+  async function pollStats() {
+    if (!S.busId) return;
+    try {
+      var r = await api("/buses/" + S.busId + "/stats");
+      var s = r.data.stats;
+      $("sRxFps").textContent = s.rx_rate_fps.toFixed(0);
+      $("sTxFps").textContent = s.tx_rate_fps.toFixed(0);
+      $("sLoad").textContent = (s.bus_load * 100).toFixed(1) + "%";
+      $("sRxTotal").textContent = s.rx_frames;
+      $("sTxTotal").textContent = s.tx_frames;
+      $("sErr").textContent = s.error_frames;
+      $("sState").textContent = r.data.state;
+      $("sState").style.color =
+        r.data.state === "active" ? "var(--ok)" :
+        r.data.state === "error-passive" ? "var(--warn)" : "var(--err)";
+      if (s.last_error) status("最近错误：" + s.last_error, "err");
+
+      // 录制状态跟着刷新，避免用户以为没在录
+      var rec = r.data.recording || {};
+      renderRecInfo(rec);
+    } catch (e) { /* 会话可能被关掉 */ }
+  }
+  setInterval(pollStats, 1000);
+
+  // ---------------------------------------------------------------- 发送
+  function txFrame() {
+    var frame = {
+      id: $("txId").value.trim(),
+      data: $("txData").value.trim(),
+      is_extended_id: $("txExt").checked,
+      is_fd: $("txFd").checked,
+      bitrate_switch: $("txBrs").checked,
+      is_remote_frame: $("txRtr").checked
+    };
+    if (frame.is_remote_frame) frame.data = "";
+    return frame;
+  }
+
+  function showTxResult(obj) {
+    var box = $("txResult");
+    box.innerHTML = "";
+    Object.keys(obj).forEach(function (k) {
+      box.appendChild(el("dt", null, k));
+      box.appendChild(el("dd", null, String(obj[k])));
+    });
+  }
+
+  $("btnSend").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var frame = txFrame();
+    var repeat = Math.max(1, Number($("txRepeat").value) || 1);
+    var gap = Number($("txGap").value) || 0;
+    if (repeat === 1) {
+      var r = await api("/buses/" + S.busId + "/send", { method: "POST", body: frame });
+      S.pending.push(r.data);
+      flushRows();
+      showTxResult({ 已发送: r.data.id_hex, 数据: spacedHex(r.data.data), RX水位: r.seq });
+      status("已发送 " + r.data.id_hex, "ok");
+    } else {
+      var frames = [];
+      for (var i = 0; i < repeat; i++) frames.push(frame);
+      var r2 = await api("/buses/" + S.busId + "/send/batch", {
+        method: "POST", body: { frames: frames, interval_ms: gap }
+      });
+      showTxResult({ 批量发送: r2.data.sent, 耗时ms: r2.data.elapsed_ms, RX水位: r2.seq });
+      status("批量发送 " + r2.data.sent + " 帧", "ok");
+    }
+  });
+
+  $("btnTransact").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var body = {
+      frame: txFrame(),
+      expect: {
+        can_id: $("txExpectId").value.trim() || null,
+        timeout_ms: Number($("txTimeout").value) || 1000,
+        count: 1
+      },
+      repeat: Math.max(1, Number($("txRepeat").value) || 1)
+    };
+    try {
+      var r = await api("/buses/" + S.busId + "/transact", { method: "POST", body: body });
+      var lat = r.data.latency || {};
+      (r.data.responses || []).forEach(function (f) { S.pending.push(f); });
+      flushRows();
+      showTxResult({
+        响应对数: r.data.count,
+        最小ms: lat.min, 平均ms: lat.avg, 最大ms: lat.max
+      });
+      status("事务完成，往返 " + (lat.avg != null ? lat.avg + " ms" : "?"), "ok");
+    } catch (e) {
+      // 无应答时后端返回 408，这是断言在正常工作，不是故障
+      showTxResult({ 结果: "超时未收到期望帧", 提示: "确认对端是否应答，或把期望 ID 改成 null 收任意帧" });
+      status("事务超时：" + e.message, "err");
+    }
+  });
+
+  $("btnCyclic").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var period = Number($("txGap").value);
+    if (!period) return status("周期发送的周期不能为 0，请在「间隔 ms」里填周期", "err");
+    var r = await api("/buses/" + S.busId + "/cyclic", {
+      method: "POST",
+      body: { frames: [txFrame()], period_ms: period }
+    });
+    showTxResult({ 周期任务: r.data.id, 周期ms: r.data.period_ms, 已发: r.data.sent_frames });
+    status("周期发送已启动，周期 " + period + " ms", "ok");
+  });
+
+  $("btnCyclicStop").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var r = await api("/buses/" + S.busId + "/cyclic", { method: "DELETE" });
+    status("已停止 " + r.data.stopped + " 个周期任务", "ok");
+  });
+
+  // ---------------------------------------------------------------- 过滤
+  function renderChips() {
+    var box = $("filterChips");
+    box.innerHTML = "";
+    if (!S.filters.length) {
+      box.appendChild(el("span", "muted", "当前没有过滤器（接收全部报文）"));
+      return;
+    }
+    S.filters.forEach(function (f, idx) {
+      var chip = el("span", "chip");
+      var ext = f.is_extended_id === true ? " EXT" : f.is_extended_id === false ? " STD" : "";
+      chip.appendChild(el("span", null,
+        "0x" + Number(f.can_id).toString(16).toUpperCase() + " / mask 0x" +
+        Number(f.id_mask).toString(16).toUpperCase() + ext));
+      var x = el("button", null, "×");
+      x.onclick = function () {
+        S.filters.splice(idx, 1);
+        renderChips();
+      };
+      chip.appendChild(x);
+      box.appendChild(chip);
+    });
+  }
+
+  $("btnAddFilter").onclick = function () {
+    var id = $("fltId").value.trim();
+    if (!id) return status("can_id 不能为空", "err");
+    var f = { can_id: id, id_mask: $("fltMask").value.trim() || "0x7FF" };
+    var ext = $("fltExt").value;
+    if (ext !== "") f.is_extended_id = ext === "true";
+    S.filters.push(f);
+    renderChips();
+    status("已添加过滤器，点「应用到会话」生效");
+  };
+
+  $("btnApplyFilter").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    if (!S.filters.length) return status("先添加过滤器", "err");
+    var r = await api("/buses/" + S.busId + "/filters", {
+      method: "PUT", body: { filters: S.filters }
+    });
+    $("kvHw").textContent = S.filters.length + " 条" + (r.data.hw_filters_active ? "（硬件生效）" : "（仅软件）");
+    status("过滤器已生效" + (r.data.hw_filters_active ? "（硬件级）" : "（软件兜底）"), "ok");
+  });
+
+  $("btnClearFilter").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    S.filters = [];
+    renderChips();
+    await api("/buses/" + S.busId + "/filters", { method: "DELETE" });
+    $("kvHw").textContent = "无";
+    status("过滤器已清除，恢复接收全部报文", "ok");
+  });
+
+  // ---------------------------------------------------------------- 录波
+  function renderRecInfo(info) {
+    var box = $("recInfo");
+    box.innerHTML = "";
+    var rows = {
+      "状态": info.active ? "录制中" : "未录制",
+      "格式": info.format || "—",
+      "帧数": info.frames != null ? info.frames : 0,
+      "大小": fmtSize(info.bytes || 0),
+      "路径": info.path || "—"
+    };
+    if (info.active && info.started_at) {
+      rows["已录"] = Math.max(0, Math.round(Date.now() / 1000 - info.started_at)) + " s";
+    }
+    Object.keys(rows).forEach(function (k) {
+      box.appendChild(el("dt", null, k));
+      box.appendChild(el("dd", null, String(rows[k])));
+    });
+    $("btnRecStart").disabled = !!info.active;
+    $("btnRecStop").disabled = !info.active;
+  }
+
+  $("btnRecStart").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var body = { format: $("recFormat").value };
+    var p = $("recPath").value.trim();
+    if (p) body.path = p;
+    var r = await api("/buses/" + S.busId + "/record/start", { method: "POST", body: body });
+    renderRecInfo(r.data);
+    status("开始录制 -> " + r.data.path, "ok");
+    loadRecFiles();
+  });
+
+  $("btnRecStop").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var r = await api("/buses/" + S.busId + "/record/stop", { method: "POST" });
+    renderRecInfo(r.data);
+    status("录制已停止，共 " + r.data.frames + " 帧 / " + fmtSize(r.data.bytes), "ok");
+    loadRecFiles();
+  });
+
+  async function loadRecFiles() {
+    var tbody = $("recFiles").querySelector("tbody");
+    try {
+      var r = await api("/recordings");
+      var files = r.data.files || [];
+      tbody.innerHTML = "";
+      if (!files.length) {
+        var tr0 = el("tr");
+        var td0 = el("td", "muted", "还没有录制文件");
+        td0.colSpan = 4;
+        tr0.appendChild(td0);
+        tbody.appendChild(tr0);
+        return;
+      }
+      files.forEach(function (f) {
+        var tr = el("tr");
+        tr.appendChild(el("td", null, f.name));
+        tr.appendChild(el("td", null, fmtSize(f.size)));
+        tr.appendChild(el("td", null, new Date(f.mtime * 1000).toLocaleString("zh-CN", { hour12: false })));
+        var tdAct = el("td");
+        var b = el("button", "sm", "选用");
+        b.onclick = function (ev) {
+          ev.stopPropagation();
+          $("rpPath").value = f.path;
+          var all = tbody.querySelectorAll("tr");
+          for (var i = 0; i < all.length; i++) all[i].classList.remove("sel");
+          tr.classList.add("sel");
+          status("已选择 " + f.name + "，可直接回放");
+        };
+        tdAct.appendChild(b);
+        tr.appendChild(tdAct);
+        tbody.appendChild(tr);
+      });
+    } catch (e) {
+      log("读取录制文件列表失败：" + e.message, "err");
+    }
+  }
+
+  $("btnRecList").onclick = guarded(async function () {
+    await loadRecFiles();
+    status("录制文件列表已刷新", "ok");
+  });
+
+  $("btnReplay").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var p = $("rpPath").value.trim();
+    if (!p) return status("先选择或填写回放文件", "err");
+    var body = { path: p, speed: Number($("rpSpeed").value) || 1, count: Number($("rpCount").value) || 1, loop: $("rpLoop").checked };
+    var gap = $("rpGap").value.trim();
+    if (gap !== "") body.gap_ms = Number(gap);
+    var r = await api("/buses/" + S.busId + "/replay", { method: "POST", body: body });
+    status("回放已启动：" + r.data.id, "ok");
+    $("rpJobs").textContent = "回放任务：" + r.data.id + " · 已发 " + r.data.sent;
+    setTimeout(refreshReplay, 1200);
+  });
+
+  $("btnReplayStop").onclick = guarded(async function () {
+    if (!S.busId) return status("先打开通道", "err");
+    var r = await api("/buses/" + S.busId + "/replay", { method: "DELETE" });
+    status("已停止 " + r.data.stopped + " 个回放任务", "ok");
+    $("rpJobs").textContent = "";
+  });
+
+  async function refreshReplay() {
+    if (!S.busId) return;
+    try {
+      var r = await api("/buses/" + S.busId + "/replay");
+      var jobs = r.data.jobs || [];
+      if (!jobs.length) { $("rpJobs").textContent = ""; return; }
+      $("rpJobs").textContent = jobs.map(function (j) {
+        return j.id + " 已发 " + j.sent + (j.running ? "（进行中）" : "（结束）") + (j.error ? " 错误：" + j.error : "");
+      }).join("　");
+    } catch (e) { /* ignore */ }
+  }
+  setInterval(refreshReplay, 2000);
+
+  // ---------------------------------------------------------------- 标签页
+  var tabs = document.querySelectorAll(".tabs button");
+  Array.prototype.forEach.call(tabs, function (btn) {
+    btn.onclick = function () {
+      Array.prototype.forEach.call(tabs, function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      ["send", "filter", "record", "log"].forEach(function (name) {
+        $("tab-" + name).hidden = name !== btn.dataset.tab;
+      });
+    };
+  });
+
+  $("btnLogClear").onclick = function () { $("logBox").textContent = ""; };
+  $("btnDocs").onclick = function () { window.open(baseUrl() + "/docs", "_blank"); };
+  $("btnHealth").onclick = guarded(function () { return checkHealth(false); });
+
+  // ---------------------------------------------------------------- 启动
+  function initBase() {
+    var saved = localStorage.getItem("cantest.base");
+    var input = $("baseUrl");
+    if (saved) {
+      input.value = saved;
+    } else if (location.protocol === "http:" || location.protocol === "https:") {
+      input.value = location.origin;
+    } else {
+      input.value = "http://127.0.0.1:8700";
+    }
+    S.base = input.value;
+    input.onchange = function () {
+      S.base = input.value.trim();
+      localStorage.setItem("cantest.base", S.base);
+      checkHealth(false);
+    };
+  }
+
+  initBase();
+  renderChips();
+  renderRecInfo({ active: false, frames: 0, bytes: 0 });
+  checkHealth(true).then(function (ok) {
+    if (ok) loadRecFiles();
+  });
+})();
+</script>
+</body>
+</html>
