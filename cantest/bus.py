@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from collections import deque
@@ -201,6 +202,10 @@ class BusSession:
             return
 
         now = time.time()
+        # 进到这里的帧必然是收来的，显式打标。
+        # 不能指望后端自己设：PCAN 会设，但 virtual 后端是把发送方的 Message
+        # 对象直接广播出去，is_rx 还是 False，于是「统计说收到了、载荷说是我发的」。
+        msg.is_rx = True
         self._normalize_ts(msg, now)
         with self._lock:
             self._seq += 1
@@ -342,7 +347,10 @@ class BusSession:
             self._stats.tx_bytes += len(msg.data or b"")
             self._stats.tx_ts.append(now)
             self._stats.load_win.append((now, frame_bits(msg)))
-            self._tx_log.append(msg)
+            # 存副本：发送记账记的是「我发出去的样子」。某些后端（virtual）会把这个
+            # Message 对象直接广播出去，接收侧打 is_rx 标记时会改到同一个对象，
+            # 于是 tx_log 里的帧变成「收到」的，收发记录串味。
+            self._tx_log.append(copy.copy(msg))
 
         if self._recorder.active:
             self._recorder.write(msg)

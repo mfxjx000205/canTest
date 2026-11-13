@@ -14,6 +14,7 @@ import can
 __all__ = [
     "DataLike",
     "parse_data",
+    "parse_can_id",
     "format_data",
     "format_id",
     "message_to_dict",
@@ -64,6 +65,40 @@ def parse_data(value: DataLike) -> bytes:
             out.append(item)
         return bytes(out)
     raise TypeError(f"不支持的数据类型：{type(value)!r}")
+
+
+def parse_can_id(value: "int | str | None") -> int:
+    """把 ID 的各种写法统一成整数。
+
+    CAN 的仲裁 ID 在日常沟通里几乎总是十六进制（``0x18FF50E5``），
+    但 JSON 只有数字，让调用方自己算成 419385573 既容易错也不可读。
+    这里按 Python 字面量习惯定规则，避免 "181 是十进制还是十六进制" 的歧义：
+
+    - ``419385573``        整数，原样返回
+    - ``"0x18FF50E5"``     带 ``0x`` 前缀 → 十六进制
+    - ``"18FF50E5"``       含 a~f 字母 → 十六进制（不带前缀也不可能是十进制）
+    - ``"181"``            纯数字串 → 十进制（想写十六进制请加 ``0x``）
+    """
+    if isinstance(value, bool):
+        # bool 是 int 的子类，但把 True 当 ID 显然是调用方搞错了
+        raise TypeError("ID 不能是布尔值")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip().replace("_", "").replace(" ", "")
+        if not text:
+            raise ValueError("ID 不能为空字符串")
+        try:
+            if text[:2].lower() == "0x":
+                return int(text, 16)
+            if text.isdigit():
+                return int(text, 10)
+            return int(text, 16)
+        except ValueError as exc:
+            raise ValueError(
+                f"非法的 ID：{value!r}（示例：0x18FF50E5 或 419385573）"
+            ) from exc
+    raise TypeError(f"不支持的 ID 类型：{type(value)!r}")
 
 
 def format_data(data: Iterable[int]) -> str:

@@ -46,6 +46,30 @@ class TestSendReceive:
         assert frames[0].arbitration_id == 0x181
         assert bytes(frames[0].data) == b"\x01\x02"
 
+    def test_received_frames_are_marked_as_rx(self, bus) -> None:
+        """收到的帧必须标 is_rx=True。
+
+        virtual 后端是把发送方的 Message 对象广播出去，如果只在 _on_frame 里
+        依赖后端设好的 is_rx，读出来会全是 False——统计说收到了、载荷说是自己发的。
+        """
+        bus.send(FrameSpec(id=0x181, data="0102"))
+        frames = bus.receive(count=1, timeout_s=1.0)
+        assert frames[0].is_rx is True
+
+    def test_tx_log_stores_snapshot_not_same_object(self, bus) -> None:
+        """发送记账必须存快照，不能存调用方手里那一个对象。
+
+        某些后端（virtual）把这个 Message 直接广播出去，接收侧打 is_rx 标记时
+        会改到同一个对象，于是「我发的帧」在记录里变成「我收的帧」。
+        这里直接模拟那种污染，验证记账不受影响。
+        """
+        sent = bus.send(FrameSpec(id=0x181, data="0102"))
+        recorded = bus._tx_log[-1]
+
+        assert recorded is not sent, "记账不该直接引用调用方的对象"
+        sent.is_rx = True  # 模拟被接收侧标成「收到」
+        assert recorded.is_rx is False, "发送记录被接收侧的打标污染了"
+
     def test_receive_is_consuming(self, bus) -> None:
         bus.send(FrameSpec(id=0x181, data="01"))
         assert len(bus.receive(count=1, timeout_s=1.0)) == 1

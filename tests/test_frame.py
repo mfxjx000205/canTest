@@ -12,6 +12,7 @@ from cantest.frame import (
     format_id,
     frame_bits,
     message_to_dict,
+    parse_can_id,
     parse_data,
 )
 
@@ -58,6 +59,40 @@ class TestParseData:
     def test_unsupported_type_rejected(self) -> None:
         with pytest.raises(TypeError):
             parse_data(3.5)  # type: ignore[arg-type]
+
+
+class TestParseCanId:
+    """ID 的写法必须宽容，但歧义必须有明确规则。
+
+    起因是 README 里的 curl 示例写了 ``"id":"0x18FF50E5"``，而模型只收整数，
+    照抄示例直接 422。CAN 的 ID 天生按十六进制沟通，逼调用方心算成 419385573 不合理。
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["0x18FF50E5", "0X18FF50E5", "18FF50E5", 0x18FF50E5, "419385573", 419385573],
+    )
+    def test_same_value_many_forms(self, raw) -> None:
+        assert parse_can_id(raw) == 0x18FF50E5
+
+    def test_plain_digits_are_decimal(self) -> None:
+        # "181" 与 "0x181" 结果不同——纯数字串按十进制，避免「这个 181 是几进制」
+        # 的猜测；要写十六进制就加 0x 前缀。
+        assert parse_can_id("181") == 181
+        assert parse_can_id("0x181") == 0x181
+
+    def test_tolerates_separators(self) -> None:
+        assert parse_can_id(" 0x18FF_50E5 ") == 0x18FF50E5
+
+    @pytest.mark.parametrize("raw", ["", "   ", "0xZZ"])
+    def test_bad_text_rejected(self, raw: str) -> None:
+        with pytest.raises(ValueError):
+            parse_can_id(raw)
+
+    def test_bool_rejected(self) -> None:
+        # bool 是 int 的子类，True 会被当成 ID=1 悄悄发出去，必须挡掉
+        with pytest.raises(TypeError):
+            parse_can_id(True)  # type: ignore[arg-type]
 
 
 def test_format_helpers() -> None:

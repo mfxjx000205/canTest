@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 import can
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
-from .frame import FD_DLC_LENGTHS, format_data, parse_data
+from .frame import FD_DLC_LENGTHS, format_data, parse_can_id, parse_data
 
 __all__ = [
     "FilterSpec",
@@ -38,7 +38,22 @@ MAX_FD_LEN = 64
 # --------------------------------------------------------------------------
 # 过滤器
 # --------------------------------------------------------------------------
-class FilterSpec(BaseModel):
+class _IdParsingModel(BaseModel):
+    """把 ID 字段的解析规则收敛到一处。
+
+    ``FrameSpec`` / ``FilterSpec`` 都收 ID，如果各写一遍 before-validator，
+    迟早会出现「发送支持 0x 前缀、过滤不支持」这种不一致，调用方踩坑。
+    """
+
+    @staticmethod
+    def _coerce_id(value: Any) -> Any:
+        try:
+            return parse_can_id(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class FilterSpec(_IdParsingModel):
     """硬件/软件过滤器。
 
     语义与 socketCAN 一致：``(frame_id & id_mask) == (can_id & id_mask)``。
@@ -47,11 +62,16 @@ class FilterSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    can_id: int = Field(ge=0, description="要匹配的 CAN ID")
+    can_id: int = Field(ge=0, description="要匹配的 CAN ID，接受 0x18FF50E5 或十进制")
     id_mask: int = Field(default=MAX_CAN_ID_STD, ge=0, description="参与比较的位掩码")
     is_extended_id: Optional[bool] = Field(
         default=None, description="None 表示不区分标准/扩展帧"
     )
+
+    @field_validator("can_id", "id_mask", mode="before")
+    @classmethod
+    def _parse_ids(cls, value: Any) -> Any:
+        return _IdParsingModel._coerce_id(value)
 
     @model_validator(mode="after")
     def _check(self) -> "FilterSpec":
@@ -72,12 +92,12 @@ class FilterSpec(BaseModel):
 # --------------------------------------------------------------------------
 # 帧
 # --------------------------------------------------------------------------
-class FrameSpec(BaseModel):
+class FrameSpec(_IdParsingModel):
     """待发送的帧。``data`` 接受 hex 字符串、字节数组或整数列表。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    id: int = Field(ge=0, description="仲裁 ID")
+    id: int = Field(ge=0, description="仲裁 ID，接受 0x18FF50E5 或十进制")
     data: bytes = Field(default=b"", description="数据域，hex 字符串或字节数组")
     is_extended_id: bool = False
     is_fd: bool = False
@@ -85,6 +105,11 @@ class FrameSpec(BaseModel):
         default=False, description="CAN FD 是否切换数据段波特率（BRS）"
     )
     is_remote_frame: bool = False
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _parse_id(cls, value: Any) -> Any:
+        return _IdParsingModel._coerce_id(value)
 
     @field_validator("data", mode="before")
     @classmethod
@@ -268,6 +293,13 @@ class ExpectRequest(BaseModel):
     fail_fast: bool = Field(
         default=True, description="超时未满足时返回 408，便于测试平台直接判失败"
     )
+
+    @field_validator("can_id", "id_mask", mode="before")
+    @classmethod
+    def _parse_ids(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _IdParsingModel._coerce_id(value)
 
 
 class TransactRequest(BaseModel):

@@ -153,6 +153,39 @@ class TestFrames:
         assert data["data"] == "11223344"
         assert data["is_rx"] is False
 
+    def test_send_accepts_hex_string_id(self, client, bus_id) -> None:
+        """ID 写 0x 字符串也要能发。文档示例就是这么写的，接口必须对得上。"""
+        data = _ok(
+            client.post(
+                f"{P}/buses/{bus_id}/send",
+                json={"id": "0x18FF50E5", "data": "0102", "is_extended_id": True},
+            )
+        )
+        assert data["id"] == 0x18FF50E5
+        assert data["id_hex"] == "0x18FF50E5"
+
+    def test_filter_accepts_hex_string_id(self, client, bus_id) -> None:
+        _ok(
+            client.put(
+                f"{P}/buses/{bus_id}/filters",
+                json={"filters": [{"can_id": "0x18FF50E5", "id_mask": "0x1FFFFFFF"}]},
+            )
+        )
+        data = _ok(client.get(f"{P}/buses/{bus_id}/filters"))
+        assert data["filters"][0]["can_id"] == 0x18FF50E5
+
+    def test_expect_accepts_hex_string_id(self, client, bus_id) -> None:
+        _, seq = _sent(
+            client.post(f"{P}/buses/{bus_id}/send", json={"id": 0x181, "data": "01"})
+        )
+        data = _ok(
+            client.post(
+                f"{P}/buses/{bus_id}/expect",
+                json={"can_id": "0x181", "timeout_ms": 1000, "since_seq": seq},
+            )
+        )
+        assert data["matched"] is True
+
     def test_send_invalid_payload(self, client, bus_id) -> None:
         _err(
             client.post(f"{P}/buses/{bus_id}/send", json={"id": 0x181, "data": "123"}),
