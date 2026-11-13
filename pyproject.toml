@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cantest"
+version = "0.1.0"
+description = "CAN bus test library with a FastAPI control plane for automated test platforms"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "cantest" }]
+keywords = ["can", "canfd", "socketcan", "pcan", "fastapi", "test-automation"]
+dependencies = [
+    "python-can>=4.3",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+cantest = "cantest.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cantest*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["hardware: 需要真实 CAN 硬件，默认 skip，设置 CANTEST_HW=1 开启"]

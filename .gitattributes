@@ -1,0 +1,8 @@
+# 统一用 LF 存仓，避免 Windows/Linux 来回切换时整文件被标成改动
+* text=auto eol=lf
+
+# 二进制，别做任何换行转换
+*.blf binary
+*.png binary
+*.jpg binary
+*.ico binary
