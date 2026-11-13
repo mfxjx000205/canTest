@@ -343,10 +343,17 @@ curl -s -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus2-1/expect \
 如果 2 号口收不到，按这个顺序查：终端电阻（两端各 120 Ω，不是一端）→ 两个口的
 `bitrate` 是否一致 → `timing` 里的 `brp/tseg1/tseg2` 是否相同 → 线序是否反了。
 
-跑通之后再开自动化测试：
+跑通之后再开自动化测试（发送口必须指到自环的另一端）：
 
 ```bash
-set CANTEST_HW=1 && set CANTEST_HW_TX=1 && python -m pytest tests/test_hw_pcan.py -v
+# cmd.exe
+set CANTEST_HW=1 && set CANTEST_HW_TX=1 && set CANTEST_HW_TX_CHANNEL=PCAN_USBBUS2 && .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
+
+# PowerShell
+$env:CANTEST_HW=1; $env:CANTEST_HW_TX=1; $env:CANTEST_HW_TX_CHANNEL="PCAN_USBBUS2"; .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
+
+# bash
+CANTEST_HW=1 CANTEST_HW_TX=1 CANTEST_HW_TX_CHANNEL=PCAN_USBBUS2 .venv/Scripts/python -m pytest tests/test_hw_pcan.py -v
 ```
 
 ### 平台接入
@@ -456,15 +463,34 @@ Linux 走 socketCAN。平台侧可以先查 `/buses/{id}/capabilities` 再决定
 ```bash
 # 无硬件，195 例通过（真实硬件用例 14 例 skip），约 23 秒
 .venv\Scripts\python -m pytest tests -q
-
-# 真实硬件，只监听（不发帧，安全）
-set CANTEST_HW=1 && .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
-
-# 额外验证发送路径——注意：会在总线上真发帧，别在役总线上跑
-set CANTEST_HW=1 && set CANTEST_HW_TX=1 && .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
 ```
 
-Linux 把 `.venv\Scripts\python` 换成 `.venv/bin/python`，`set X=1` 换成 `X=1` 前缀即可。
+真机测试**必须**先设环境变量，否则 14 例全部 skip。三种 shell 写法不同，写错了不会报错，
+只会静默全跳过（`14 skipped`，exit code 仍是 0）——这是最容易踩的一个坑：
+
+```bash
+# cmd.exe
+set CANTEST_HW=1 && .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
+
+# PowerShell（5.1 不支持 &&，必须用分号）
+$env:CANTEST_HW=1; .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
+
+# bash / git bash
+CANTEST_HW=1 .venv/Scripts/python -m pytest tests/test_hw_pcan.py -v
+```
+
+上面是**只监听**档（12 passed, 2 skipped）——不发 ACK、不注入帧，对在役总线是只读的。
+
+要额外验发送路径，需要三道开关，且 `CANTEST_HW_TX_CHANNEL` **必须显式指定**接在自环
+另一端的那个口（它故意没有默认值，防止"以为在测自环、实际打到了在役总线"）：
+
+```bash
+# bash 示例；cmd / PowerShell 见上面三种写法
+CANTEST_HW=1 CANTEST_HW_TX=1 CANTEST_HW_TX_CHANNEL=PCAN_USBBUS2 \
+  .venv/Scripts/python -m pytest tests/test_hw_pcan.py -v
+```
+
+Linux 把 `.venv\Scripts\python` 换成 `.venv/bin/python` 即可。
 
 - `tests/test_timing.py`：位定时求解的不变式（`brp × tq_total` 必须等于一个位的时钟数）
 - `tests/test_frame.py` / `test_models.py`：数据编解码、帧匹配、请求模型边界
@@ -484,13 +510,20 @@ $ CANTEST_HW=1 python -m pytest tests/test_hw_pcan.py -v
 错误帧 0、bus-off 0、`last_error` 空，状态 `ACTIVE`。**位定时算错是不可能收到这些帧的**，
 所以「80 MHz / 1 Mbps 配置有效」这条由实测流量背书，而不是由配置回显背书。
 
+`TestFiltering::test_hardware_filter_selects_one_id` 曾经约 2/7 概率偶发失败：它拿
+`history[0]`（窗口里最老的一帧）的 ID 当过滤目标，而这条线上报文集合会变——实测
+`0x180d0a1a` 在一秒内就换成了 `0x180d0a1e`。撞上一个刚好已停发的 ID，过滤后一条都
+收不到，报 `assert []`，看着像过滤器坏了。现已改为取窗口内**出现次数最多**的 ID，
+连跑 5 次稳定；且做过反证（去掉 `set_filters` 调用后用例立刻变红），不是空断言。
+
 ## 安全提醒
 
 现场那条总线上跑的是**活的 J1939 报文**（`0x18xx0Axx` 一族，源地址 0x19/0x1A/0x1E…）。
 在役总线上随便发帧可能触发执行器动作或让 ECU 记故障码，因此：
 
 - 首次接触一律 `listen_only: true`（不产生 ACK，纯旁听）；
-- 发送类用例用 `CANTEST_HW_TX=1` 显式开启，默认跑不了；
+- 发送类用例用 `CANTEST_HW_TX=1` 显式开启，默认跑不了；且必须再用
+  `CANTEST_HW_TX_CHANNEL` 指明自环发送口——没有默认值，不指明就一直 skip；
 - 需要真发帧做联调时，优先用独立的测试总线或双通道自环，不要在车上试。
 
 ## 代码结构
