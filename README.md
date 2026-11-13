@@ -51,27 +51,58 @@ python-can  : 4.6.1
 
 ## 五分钟上手
 
+先不接硬件，用 `virtual` 后端跑一遍——**能跑通说明装对了**，再换真机。
+
 ```bash
-# 1) 打开通道（只监听；listen_only=true 时不会产生 ACK，不干扰在役总线）
-curl -X POST http://127.0.0.1:8700/api/v1/buses \
+python -m cantest serve --port 8700
+```
+
+```bash
+# 1) 开一个虚拟通道
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
+  -H "Content-Type: application/json" \
+  -d '{"interface":"virtual","channel":"demo"}'
+# → {"ok":true,"data":{"id":"virtual-demo-1", ...}}
+
+# 2) 发一帧（ID 写 0x 字符串即可）
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/virtual-demo-1/send \
+  -H "Content-Type: application/json" \
+  -d '{"id":"0x181","data":"1102"}'
+
+# 3) 读回来（消费式；虚拟总线会广播回自己）
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/virtual-demo-1/receive \
+  -H "Content-Type: application/json" -d '{"count":10,"timeout_ms":1000}'
+
+# 4) 统计
+curl -s http://127.0.0.1:8700/api/v1/buses/virtual-demo-1/stats
+```
+
+换成真机只改第 1 步的 `interface` / `channel`：
+
+```bash
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
   -H "Content-Type: application/json" \
   -d '{"interface":"pcan","channel":"PCAN_USBBUS1","bitrate":1000000,
        "f_clock_mhz":80,"sample_point":0.8,"listen_only":true}'
 # → {"ok":true,"data":{"id":"pcan-usbbus1-1", ...}}
-
-# 2) 看统计（帧率、总线负载、错误计数）
-curl http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/stats
-
-# 3) 消费式读 10 帧
-curl -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/receive \
-  -H "Content-Type: application/json" -d '{"count":10,"timeout_ms":1000}'
-
-# 4) 发一帧并等响应，直接拿往返时延
-curl -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/transact \
-  -H "Content-Type: application/json" \
-  -d '{"frame":{"id":"0x18FF50E5","data":"0102","is_extended_id":true},
-       "expect":{"can_id":"0x18FF50E6","timeout_ms":200}}'
 ```
+
+`listen_only=true` 表示**不发 ACK、不发错误帧**，对在役总线只读。
+后续用返回的 `data.id` 替换 URL 里的 `virtual-demo-1`。
+
+真机上「发一帧等响应」用 `transact`，一次调用拿到往返时延：
+
+```bash
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/transact \
+  -H "Content-Type: application/json" \
+  -d '{"frame":{"id":"0x601","data":"3E00"},
+       "expect":{"can_id":"0x581","timeout_ms":200}}'
+```
+
+这需要总线上**真有 ECU 应答** `0x581`（UDS TesterPresent 的典型问答）；没有对端就会
+`408 timeout`，那是断言在正常工作，不是接口坏了。
+
+完整的测试路径（含双通道自环验证发送）见 [怎么测：三条递进路径](#怎么测三条递进路径)。
 
 ## 接口一览
 
@@ -137,6 +168,28 @@ curl -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/transact \
 {"can_id": 387, "timeout_ms": 500, "since_seq": 1024}
 ```
 
+**2.1 `expect` 默认只认「调用之后到达」的帧，这是故意的。**
+
+`include_buffer` 默认 `false`。所以下面这种写法**一定超时**——不是接口坏了：
+
+```bash
+# 先发（帧立刻落到 B 的缓冲）
+curl -s -X POST .../buses/A/send -d '{"id":"0x18FF50E5","data":"0102"}'
+# 再等（等待器注册时，帧早就到了，默认语义认为「这是过去的事」）
+curl -s -X POST .../buses/B/expect -d '{"can_id":"0x18FF50E5","timeout_ms":1000}'
+# → 408 timeout，received 0/1
+```
+
+默认值**不能**改成「顺手查历史」：那样上一轮用例的残留帧会让这一轮断言假通过，而
+「假通过」比「假失败」危险得多——测试平台的结论会直接错。要一次性验证，显式加一个：
+
+| 写法 | 语义 | 该用在哪 |
+| --- | --- | --- |
+| 默认 | 只认调用之后到达的帧 | 自动化用例（防假通过） |
+| `"include_buffer": true` | 在已有历史帧里找 | 手工验证、手工排查 |
+| `"since_seq": <send 返回的 seq>` | 只认该水位之后 | 拆成两次调用的自动化用例 |
+| 用 `transact` | 同一次调用内先记水位再发 | **首选** |
+
 **3. 单位统一。** 接口里的 `timeout_ms`、`period_ms`、`gap_ms` 都是**毫秒**；
 库内部的 `BusSession.expect(timeout_s=...)` 是**秒**。HTTP 层不做隐式换算猜测。
 
@@ -163,6 +216,151 @@ curl -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/transact \
 **7. 过滤不追溯历史。** `PUT /filters` 只影响**之后到达**的帧，缓冲区里已有的帧照旧在，
 `receive` 会先把它们吐出来。想验证「过滤真的生效」，设完过滤先 `POST /flush` 再收，
 否则会把设过滤之前的帧当成漏网的帧。硬件过滤与软件过滤是两层，硬件不支持时软件兜底。
+
+**8. ID 写 `0x` 字符串最省事。** `"0x18FF50E5"`、`"18FF50E5"`、`419385573` 三种写法等价，
+`id` / `can_id` / `id_mask` 都吃。规则按 Python 字面量习惯，避免「181 是几进制」的猜测：
+
+| 写法 | 解释成 | 结果 |
+| --- | --- | --- |
+| `"0x181"` | 带前缀 → 十六进制 | 385 |
+| `"181"` | 纯数字串 → 十进制 | 181 |
+| `"18FF50E5"` | 含字母，只能是十六进制 | 0x18FF50E5 |
+| `419385573` | 整数，原样用 | 0x18FF50E5 |
+
+要写十六进制就带 `0x`——这条规则是为了让 `"181"` 不被误读成 385。
+
+## 怎么测：三条递进路径
+
+按风险从低到高，每步都能独立验证。**不要一上手就往在役总线上发帧。**
+
+### 路径 A：不接硬件，先确认装对了（零风险，2 分钟）
+
+`virtual` 后端在进程内模拟总线，两个会话挂同一个 `channel` 就能互通。
+
+```bash
+python -m pytest tests -q          # 期望 195 passed, 14 skipped
+python -m cantest serve --port 8700
+```
+
+```bash
+# 开两个会话，挂同一个虚拟通道
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
+  -H "Content-Type: application/json" -d '{"interface":"virtual","channel":"demo"}'
+# → data.id = "virtual-demo-1"
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
+  -H "Content-Type: application/json" -d '{"interface":"virtual","channel":"demo"}'
+# → data.id = "virtual-demo-2"
+
+# 一号发，二号断言收到
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/virtual-demo-1/send \
+  -H "Content-Type: application/json" \
+  -d '{"id":"0x18FF50E5","data":"0102030405060708","is_extended_id":true}'
+
+# include_buffer 必须带上：帧在等待器注册前就到了（详见语义 2.1）
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/virtual-demo-2/expect \
+  -H "Content-Type: application/json" \
+  -d '{"can_id":"0x18FF50E5","timeout_ms":1000,"include_buffer":true}'
+# → {"ok":true,"data":{"matched":true,"count":1,...}}
+```
+
+实测输出：
+
+```
+[1] A 发一帧（ID 用 0x 字符串）
+    200 {"ok":true,"data":{"id":419385573,"id_hex":"0x18FF50E5","data":"0102030405060708",
+         "is_extended_id":true,"is_rx":false,"timestamp":1794539158.909701},"seq":0}
+
+[2] B 断言收到（include_buffer=true）
+    200 {"ok":true,"data":{"matched":true,"count":1,
+         "frames":[{"id_hex":"0x18FF50E5","is_rx":true,"channel":"demo",...}]}}
+
+[2'] 同一个请求去掉 include_buffer
+    408 {"ok":false,"error":{"code":"timeout",
+         "message":"期望帧未在 1000 ms 内到齐（0/1）"}}      ← 预期行为，不是 bug
+```
+
+**注意**：`virtual` 后端会把帧**广播回发送者自己**，所以你会看到 `tx_frames` 和
+`rx_frames` 一起涨（实测发 8 帧后两边都是 8）。真实硬件不会这样，除非显式开
+`receive_own_messages=true`。
+
+### 路径 B：接真机，只监听（不产生 ACK，不干扰总线）
+
+```bash
+python -m cantest probe                        # 先自检：DLL / 通道 / 驱动
+```
+
+确认能看到 `PCAN_USBBUS1` / `PCAN_USBBUS2` 后再开通道：
+
+```bash
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
+  -H "Content-Type: application/json" \
+  -d '{"interface":"pcan","channel":"PCAN_USBBUS1","bitrate":1000000,
+       "f_clock_mhz":80,"sample_point":0.8,"listen_only":true}'
+```
+
+`listen_only=true` 意味着**不发 ACK、不发错误帧**，对在役总线是只读的。然后：
+
+```bash
+# 帧率 / 总线负载 / 错误计数
+curl -s http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/stats
+
+# 读 10 帧
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/receive \
+  -H "Content-Type: application/json" -d '{"count":10,"timeout_ms":1000}'
+```
+
+**这一档能验证的**：位定时算得对不对（`timing` 字段）、能不能收到帧、帧率是否合理、
+有没有错误帧、过滤器是否生效。
+**验证不了的**：发送路径。只监听模式下发帧是空操作。
+
+### 路径 C：双通道自环，验证发送（唯一安全的发帧方式）
+
+用一根双绞线把 `PCAN_USBBUS1` 和 `PCAN_USBBUS2` 直连（`CAN_H`↔`CAN_H`、
+`CAN_L`↔`CAN_L`，两端 120 Ω 终端），一个口发、另一个口收——**完全绕开在役总线**。
+
+```bash
+# 发送口
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
+  -H "Content-Type: application/json" \
+  -d '{"interface":"pcan","channel":"PCAN_USBBUS1","bitrate":1000000,"f_clock_mhz":80}'
+# → pcan-usbbus1-1
+
+# 接收口
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses \
+  -H "Content-Type: application/json" \
+  -d '{"interface":"pcan","channel":"PCAN_USBBUS2","bitrate":1000000,"f_clock_mhz":80}'
+# → pcan-usbbus2-1
+
+# 1 号口发
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/send \
+  -H "Content-Type: application/json" -d '{"id":"0x181","data":"0102"}'
+
+# 2 号口收——收到就说明位定时、发送、接收整条链路都对
+curl -s -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus2-1/expect \
+  -H "Content-Type: application/json" -d '{"can_id":"0x181","timeout_ms":1000}'
+```
+
+如果 2 号口收不到，按这个顺序查：终端电阻（两端各 120 Ω，不是一端）→ 两个口的
+`bitrate` 是否一致 → `timing` 里的 `brp/tseg1/tseg2` 是否相同 → 线序是否反了。
+
+跑通之后再开自动化测试：
+
+```bash
+set CANTEST_HW=1 && set CANTEST_HW_TX=1 && python -m pytest tests/test_hw_pcan.py -v
+```
+
+### 平台接入
+
+测试平台把 CANtest 当外挂设备挂进来只需要两件事：
+
+```python
+from cantest.api.app import create_app
+app = create_app()          # 或 app.mount("/cantest", create_app())
+```
+
+- 基址 `/api/v1`，健康检查 `GET /api/v1/health`（返回 `{"ok":true,"data":{"status":"ok"}}`）
+- 所有响应统一 `{"ok":true,"data":...}` / `{"ok":false,"error":{"code":...}}`，
+  平台侧按 `ok` 判成败、按 `error.code` 分类，不用去猜 HTTP 状态码
 
 ## WebSocket 帧流
 
@@ -256,7 +454,7 @@ Linux 走 socketCAN。平台侧可以先查 `/buses/{id}/capabilities` 再决定
 ## 测试
 
 ```bash
-# 无硬件，178 例通过（真实硬件用例 14 例 skip），约 23 秒
+# 无硬件，195 例通过（真实硬件用例 14 例 skip），约 23 秒
 .venv\Scripts\python -m pytest tests -q
 
 # 真实硬件，只监听（不发帧，安全）
@@ -277,7 +475,7 @@ Linux 把 `.venv\Scripts\python` 换成 `.venv/bin/python`，`set X=1` 换成 `X
 ### 实测结果（PCAN-USB Pro FD / 1 Mbps / 80 MHz）
 
 ```
-$ python -m pytest tests -q                          → 178 passed, 14 skipped in 22.88s
+$ python -m pytest tests -q                          → 195 passed, 14 skipped in 23.33s
 $ CANTEST_HW=1 python -m pytest tests/test_hw_pcan.py -v
                                                      → 12 passed, 2 skipped in 4.34s
 ```
