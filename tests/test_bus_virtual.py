@@ -1,16 +1,18 @@
 """虚拟总线端到端：收发、断言、过滤、统计、周期发送、录制回放。
 
-这些用例不碰硬件，是回归测试的主力。真实硬件的用例见 ``test_hardware.py``。
+这些用例不碰硬件，是回归测试的主力。真实硬件的用例见 ``test_hw_pcan.py``。
 """
 
 from __future__ import annotations
 
+import json
 import time
 
+import can
 import pytest
 
 from cantest.errors import BusNotFound, OperationTimeout, UnsupportedFeature
-from cantest.frame import FrameMatcher
+from cantest.frame import FrameMatcher, message_to_dict
 from cantest.models import (
     BusConfig,
     CyclicRequest,
@@ -348,6 +350,78 @@ class TestRecordReplay:
         job = bus.start_replay(ReplayRequest(path=str(tmp_path / "nope.jsonl")))
         assert wait_until(lambda: job.error is not None, timeout=2.0)
         assert "不存在" in job.error
+
+    def test_replayed_frames_carry_send_time(self, bus, tmp_path, wait_until) -> None:
+        """回放出去的帧，时间戳必须是「刚刚发出」，不能沿用文件里的旧时间戳。
+
+        否则回放刚结束就 `GET /frames?since=<now-5s>` 会一帧都查不到——
+        统计说发了 N 帧、历史里看不见，平台侧无法对账。
+        """
+        source = tmp_path / "old.jsonl"
+        # 手写一份「1 小时前录制」的文件，时间戳差距足够大，不会靠毫秒级巧合蒙过
+        old = time.time() - 3600
+        frames = [
+            can.Message(arbitration_id=0x1A0 + i, data=b"\x02", is_extended_id=False, timestamp=old + i * 0.01)
+            for i in range(2)
+        ]
+        source.write_text(
+            "\n".join(json.dumps(message_to_dict(m)) for m in frames) + "\n", encoding="utf-8"
+        )
+
+        bus.flush()
+        before = time.time()
+        job = bus.start_replay(ReplayRequest(path=str(source), gap_ms=0, count=1))
+        assert wait_until(lambda: not job.running, timeout=3.0)
+        assert job.sent == 2
+
+        replayed = [m for m in bus.history(limit=50) if 0x1A0 <= m.arbitration_id <= 0x1A1]
+        assert len(replayed) >= 2, "回放的帧应当能在历史里查到"
+        assert all(m.timestamp >= before - 0.001 for m in replayed), (
+            f"回放帧带着旧时间戳：{[round(m.timestamp - before, 3) for m in replayed]}"
+        )
+
+
+class TestTimestamps:
+    """时间基线：驱动时间戳必须归一，否则跨时钟域比较全是错的。"""
+
+    def test_rx_timestamp_mapped_to_wall_clock(self, bus) -> None:
+        # PCAN 这类驱动给的是开机相对时间（实测 7667 s），不是 epoch
+        msg = can.Message(
+            arbitration_id=0x181, data=b"\x01", is_extended_id=False, timestamp=7667.5
+        )
+        bus._on_frame(msg)
+        assert abs(msg.timestamp - time.time()) < 2.0
+
+    def test_offset_recalibrated_on_driver_clock_jump(self, bus) -> None:
+        first = can.Message(
+            arbitration_id=0x181, data=b"\x01", is_extended_id=False, timestamp=1000.0
+        )
+        bus._on_frame(first)
+        # 驱动重启 / 系统改时间导致驱动时钟跳 1 小时，旧偏移会偏 3600 秒
+        jumped = can.Message(
+            arbitration_id=0x181, data=b"\x02", is_extended_id=False, timestamp=4600.0
+        )
+        bus._on_frame(jumped)
+        assert abs(jumped.timestamp - time.time()) < 2.0
+
+    def test_history_order_follows_arrival_across_clock_sources(self, bus) -> None:
+        # 发送帧走墙钟；这里再注入一帧「驱动时间戳」形态的接收帧（7667 这类小值）。
+        # 不归一的话它会被排到 1.79e9 前面——合并结果看着有时间、其实顺序是错的，
+        # 「先发后收」会被读成「先收后发」。所以断言的是**到达顺序**，不是有序性。
+        bus.send(FrameSpec(id=0x181, data="01"))
+        bus.receive(count=1, timeout_s=1.0)
+        bus._on_frame(
+            can.Message(arbitration_id=0x182, data=b"\x01", is_extended_id=False, timestamp=7667.0)
+        )
+        history = bus.history(limit=10)
+        assert len(history) >= 3
+        assert history[-1].arbitration_id == 0x182, "最后到达的帧必须排在最后"
+        stamps = [m.timestamp for m in history]
+        assert stamps == sorted(stamps)
+
+    def test_tx_timestamp_is_send_time(self, bus) -> None:
+        msg = bus.send(FrameSpec(id=0x181, data="01"))
+        assert abs(msg.timestamp - time.time()) < 1.0
 
 
 class TestLifecycle:

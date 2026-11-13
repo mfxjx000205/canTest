@@ -93,7 +93,7 @@ curl -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/transact \
 | 总线 | POST | `/buses` | 打开通道 |
 | | GET | `/buses` / `/buses/{id}` | 列表 / 详情 |
 | | DELETE | `/buses/{id}` | 关闭 |
-| | GET | `/buses/{id}/stats` | 帧数、字节数、错误、帧率、总线负载 |
+| | GET | `/buses/{id}/stats` | 帧数、字节数、错误、帧率、总线负载（`0~1` 比例） |
 | | GET | `/buses/{id}/capabilities` | 该会话后端支持哪些能力 |
 | | POST | `/buses/{id}/reset` | Bus-Off / Error-Passive 复位 |
 | | POST | `/buses/{id}/flush` | 清本地历史缓冲 |
@@ -146,6 +146,23 @@ curl -X POST http://127.0.0.1:8700/api/v1/buses/pcan-usbbus1-1/transact \
 **5. 停止即摘除。** `DELETE /cyclic/{id}`、`DELETE /replay/{id}` 会把任务从表里移除，
 最终统计在**停止接口的响应体**里返回（`finished` 字段）。`GET` 只列还活着的，不会挂着一条
 「已停止」的任务误导你。
+
+**6. 时间戳统一是墙钟（epoch 秒）。** 这条踩得很疼：PCAN 驱动给的接收时间戳是
+**开机相对时间**（实测 `7667.5`，不是 epoch），而发送侧是 `time.time()`（`1.79e9`）。
+两个时钟域混在一起，症状全是「看起来对、其实错」——`history()` 合并收发后
+「先发后收」被读成「先收后发」、`/frames?since=<epoch>` 把接收帧全过滤掉、
+录制回放的帧间隔失真。所以：
+
+- 接收帧按**首帧标定恒定偏移**归一到墙钟，保留驱动侧亚毫秒的相对精度；
+  偏移失配超过 5 秒（驱动重启、系统改时间）自动重新标定。
+- 发送帧（含周期发送、**回放**）的时间戳一律是**实际发出时刻**。
+  回放要还原的是帧间隔（来自文件里的原始时间戳），不是绝对时刻——
+  沿用旧时间戳会让刚回放的帧在 `?since=` 里查不到。
+- `bus_load` 是 `0~1` 的**比例**（`0.076` = 7.6%），不是百分数。
+
+**7. 过滤不追溯历史。** `PUT /filters` 只影响**之后到达**的帧，缓冲区里已有的帧照旧在，
+`receive` 会先把它们吐出来。想验证「过滤真的生效」，设完过滤先 `POST /flush` 再收，
+否则会把设过滤之前的帧当成漏网的帧。硬件过滤与软件过滤是两层，硬件不支持时软件兜底。
 
 ## WebSocket 帧流
 
@@ -239,7 +256,7 @@ Linux 走 socketCAN。平台侧可以先查 `/buses/{id}/capabilities` 再决定
 ## 测试
 
 ```bash
-# 无硬件，173 例通过（真实硬件用例 13 例 skip），约 25 秒
+# 无硬件，178 例通过（真实硬件用例 14 例 skip），约 23 秒
 .venv\Scripts\python -m pytest tests -q
 
 # 真实硬件，只监听（不发帧，安全）
@@ -260,9 +277,9 @@ Linux 把 `.venv\Scripts\python` 换成 `.venv/bin/python`，`set X=1` 换成 `X
 ### 实测结果（PCAN-USB Pro FD / 1 Mbps / 80 MHz）
 
 ```
-$ python -m pytest tests -q                          → 173 passed, 13 skipped in 25.54s
+$ python -m pytest tests -q                          → 178 passed, 14 skipped in 22.88s
 $ CANTEST_HW=1 python -m pytest tests/test_hw_pcan.py -v
-                                                     → 11 passed, 2 skipped in 4.45s
+                                                     → 12 passed, 2 skipped in 4.34s
 ```
 
 监听链路上的真实数据：3 秒收到 **1489 帧**（496 fps），11 个唯一 ID，全部扩展帧、DLC 8，

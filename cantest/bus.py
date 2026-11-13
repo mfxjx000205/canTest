@@ -132,6 +132,8 @@ class BusSession:
         self._hw_filters_active = False
         self._last_state: Optional[can.BusState] = None
         self._last_poll = 0.0
+        # 驱动时间戳与系统墙钟的偏移，首帧标定（见 _normalize_ts）
+        self._ts_offset: Optional[float] = None
 
         self._stop = threading.Event()
         self._on_frame_cb = on_frame
@@ -199,6 +201,7 @@ class BusSession:
             return
 
         now = time.time()
+        self._normalize_ts(msg, now)
         with self._lock:
             self._seq += 1
             self._frames.append((self._seq, msg))
@@ -221,6 +224,28 @@ class BusSession:
                 self._on_frame_cb(msg)
             except Exception:  # noqa: BLE001 - 回调失败不能影响 RX
                 pass
+
+    # 驱动时间戳与墙钟偏差超过这个值就重新标定（驱动复位、系统改时间）
+    _TS_RESYNC_S = 5.0
+
+    def _normalize_ts(self, msg: can.Message, now: float) -> None:
+        """把驱动给的接收时间戳统一到系统墙钟。
+
+        为什么必须做：PCAN 这类驱动给的是**开机相对时间**（实测 7667 s），
+        而发送帧用的是 ``time.time()``（1.79e9），两个时钟域混一起就会出连锁问题——
+        ``history()`` 合并收发后排序全乱、``frames?since=`` 过滤把接收帧全丢掉、
+        录制回放算出来的帧间隔毫无意义。
+
+        这里按首帧标定一个恒定偏移：既保留驱动侧亚毫秒的相对精度（时间差仍来自硬件），
+        又让绝对时刻能和墙钟对齐。偏移失配超过 5 秒视为标定失效，重新标定。
+        """
+        raw = getattr(msg, "timestamp", None)
+        if not raw or raw <= 0:
+            msg.timestamp = now
+            return
+        if self._ts_offset is None or abs(raw + self._ts_offset - now) > self._TS_RESYNC_S:
+            self._ts_offset = now - raw
+        msg.timestamp = raw + self._ts_offset
 
     @staticmethod
     def _describe_error(msg: can.Message) -> str:
@@ -287,7 +312,6 @@ class BusSession:
     # ------------------------------------------------------------------
     def send(self, spec: FrameSpec) -> can.Message:
         msg = spec.to_message()
-        msg.timestamp = time.time()
         self.transmit(msg)
         return msg
 
@@ -297,6 +321,11 @@ class BusSession:
         周期发送、回放都走这里，否则统计、历史、录制、WS 三处会出现口径不一致：
         比如回放直接调底层总线时，``tx_frames`` 不会增长，测试平台对上账就会发现
         「回放发了 2 帧但统计说 0 帧」。
+
+        时间戳也在这里统一成**实际发出时刻**。回放的消息带着录制文件里的旧时间戳，
+        如果原样放行，``GET /frames?since=`` 就查不到刚回放的帧——明明发了却看不见，
+        是典型的「看起来对、其实错」。回放自己的帧间隔另有来源（读文件时的原始时间戳），
+        不受这里影响。
         """
         try:
             self._bus.send(msg, timeout=0.2)
@@ -307,6 +336,7 @@ class BusSession:
             raise SendFailed(f"发送失败（ID {msg.arbitration_id:#x}）：{exc}") from exc
 
         now = time.time()
+        msg.timestamp = now
         with self._lock:
             self._stats.tx_frames += 1
             self._stats.tx_bytes += len(msg.data or b"")

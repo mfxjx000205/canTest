@@ -1,12 +1,12 @@
-"""真实硬件连通性验证（PEAK PCAN-USB Pro FD，1 Mbps / 80 MHz）。
+r"""真实硬件连通性验证（PEAK PCAN-USB Pro FD，1 Mbps / 80 MHz）。
 
 默认不跑，必须显式开启：
 
     # 只监听（安全，推荐先跑这个）
-    set CANTEST_HW=1 && pytest tests/test_hw_pcan.py -v
+    set CANTEST_HW=1 && .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
 
     # 允许向总线发帧（会真的往线上打帧，在役总线上慎用）
-    set CANTEST_HW=1 && set CANTEST_HW_TX=1 && pytest tests/test_hw_pcan.py -v
+    set CANTEST_HW=1 && set CANTEST_HW_TX=1 && .venv\Scripts\python -m pytest tests/test_hw_pcan.py -v
 
 可覆盖通道：``CANTEST_HW_CHANNEL=PCAN_USBBUS2``。
 
@@ -121,11 +121,28 @@ class TestReceiving:
         stamps = [m.timestamp for m in history]
         assert stamps == sorted(stamps)
 
+    def test_timestamps_are_wall_clock(self, observed) -> None:
+        # PCAN 驱动给的是**开机相对时间**（实测 7667 s，不是 epoch），
+        # 必须归一到墙钟，否则 GET /frames?since=<epoch> 会把接收帧全过滤掉，
+        # 表现为「总线上明明有帧，接口说没收到」。
+        now = time.time()
+        for msg in observed.history(limit=10):
+            assert abs(msg.timestamp - now) < 60, (
+                f"时间戳 {msg.timestamp} 不在墙钟附近（now={now}），时间基线没归一"
+            )
+
     def test_bus_load_is_plausible(self, observed) -> None:
         stats = observed.snapshot_stats()
-        # 1 Mbps 线上一半帧率约 500 fps × ~130 bit ≈ 6.5%，
-        # 只要落在 (0, 100) 就说明帧位数估算没有离谱
-        assert 0.0 < stats.bus_load < 100.0
+        # bus_load 是 0~1 的**比例**（0.076 表示 7.6%），不是百分数
+        assert 0.0 < stats.bus_load <= 1.0
+        # 与帧率交叉验算：8 字节扩展帧连插位约 150~160 bit。
+        # 区间放宽到 120~200，只抓「帧位数估算离谱一个数量级」，不做精确断言。
+        if stats.rx_rate_fps:
+            bits_per_frame = stats.bus_load * BITRATE / stats.rx_rate_fps
+            assert 120 <= bits_per_frame <= 200, (
+                f"由 bus_load={stats.bus_load} 与 {stats.rx_rate_fps} fps 反推 "
+                f"{bits_per_frame:.0f} bit/帧，位数估算有问题"
+            )
 
 
 class TestFiltering:
@@ -136,7 +153,10 @@ class TestFiltering:
 
         observed.set_filters([FilterSpec(can_id=target, id_mask=0x1FFFFFFF)])
         try:
-            for _ in range(5):
+            # 过滤只对新到达的帧生效，不追溯缓冲区里已有的帧。
+            # 不清缓冲就收，会把「设过滤之前」的帧一起读出来，看着像过滤失效。
+            observed.flush()
+            for _ in range(3):
                 frames = observed.receive(20, 1.0)
                 assert frames
                 assert {m.arbitration_id for m in frames} == {target}
