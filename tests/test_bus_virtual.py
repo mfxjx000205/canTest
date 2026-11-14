@@ -447,6 +447,105 @@ class TestTimestamps:
         msg = bus.send(FrameSpec(id=0x181, data="01"))
         assert abs(msg.timestamp - time.time()) < 1.0
 
+    def test_rapid_frames_get_distinct_timestamps(self, bus) -> None:
+        """背靠背连发时每帧都要有独立时间戳，不能塌进同一个时钟刻度。
+
+        这是 ``time.time()`` 粒度的直接后果：Windows + Python 3.10 上它只有
+        15.625 ms，连发 50 帧会全部拿到同一个值，于是 ``history()`` 的顺序
+        只能靠列表拼接顺序猜。用 perf_counter 打时间戳才能分开。
+        """
+        for i in range(50):
+            bus.send(FrameSpec(id=0x100 + (i % 4), data="01"))
+        stamps = [m.timestamp for m in bus.history(limit=200)]
+        assert len(stamps) == 50
+        assert len(set(stamps)) == 50, f"出现了重复时间戳，精度不足：{len(set(stamps))}/50"
+        assert all(b > a for a, b in zip(stamps, stamps[1:])), "时间戳必须严格递增"
+
+    def test_identical_driver_timestamps_keep_arrival_order(self, bus) -> None:
+        """驱动给的时间戳完全相同时，仍按到达顺序排列。
+
+        部分 USB-CAN 分析仪只给整毫秒时间戳，一次突发里多帧同值很常见。
+        只按时间戳排序时顺序会退化成拼接顺序（RX 在前 TX 在后），
+        "先发后收"会被读成"先收后发"。
+
+        **必须混合收发**才试得出来：纯 RX 注入时列表天然有序，稳定排序失效
+        也看不出来。这里先发一帧（进 _tx_log），再注入同值的收帧。
+
+        注意 virtual 后端会把发出的帧回环成 RX，所以 0x1FF 在历史里出现两次
+        （一次 TX 一次 RX），断言只能锚"首帧"和"末帧"，不能断言帧数。
+        """
+        bus.send(FrameSpec(id=0x1FF, data="01"))
+        bus.receive(count=1, timeout_s=1.0)  # 等回环帧落地，避免时序抖动
+        for i in range(20):
+            bus._on_frame(
+                can.Message(
+                    arbitration_id=0x200 + i, data=b"\x01",
+                    is_extended_id=False, timestamp=100.0,
+                )
+            )
+        history = bus.history(limit=100)
+        ids = [m.arbitration_id for m in history]
+
+        # 先发的帧必须在最前：不 clamp 时它会被排到注入帧之后。
+        assert ids[0] == 0x1FF, f"先发的帧被排到了后面：{[hex(i) for i in ids[:4]]}"
+        # 最后到达的注入帧必须在最后：不 clamp 时 TX 帧会落到末尾。
+        assert ids[-1] == 0x213, f"最后到达的帧没排在最后：{hex(ids[-1])}"
+        assert ids[-20:] == [0x200 + i for i in range(20)], "注入帧相对顺序错了"
+        stamps = [m.timestamp for m in history]
+        assert len(set(stamps)) == len(stamps), "同刻帧没有被区分开，排序没有依据"
+
+    def test_backwards_driver_timestamp_does_not_break_ordering(self, bus) -> None:
+        """驱动时钟回退（对时/重启）不能让历史顺序倒退。"""
+        for ts in (500.0, 400.0, 600.0, 100.0):
+            bus._on_frame(
+                can.Message(
+                    arbitration_id=0x301, data=b"\x01",
+                    is_extended_id=False, timestamp=ts,
+                )
+            )
+        stamps = [m.timestamp for m in bus.history(limit=10)]
+        assert all(b > a for a, b in zip(stamps, stamps[1:])), "时间戳回退破坏了顺序"
+
+    def test_coarse_clock_still_orders_frames(self, bus, monkeypatch) -> None:
+        """即使时钟退化成 15.6 ms 粒度，顺序也必须正确。
+
+        这是 ``_stamp`` 的**正面用例**：把 ``clock.now`` 强制换成返回粗糙刻度
+        （模拟 Python 3.10/Windows 的 ``time.time()``，或整毫秒的驱动时间戳），
+        此时多帧必然拿到同一个值，只有 clamp 能把它们排开。
+
+        没有这条用例，前面那些"同刻帧"测试只是在验证时钟够细——环境一换
+        （比如 CI 跑在 3.10/Windows 上）就测不到 clamp 了。
+        """
+        from cantest import bus as bus_module
+
+        # 每 3 次调用才前进一格，模拟粗时钟：连发若干帧会拿到相同值
+        state = {"n": 0, "v": 1000.0}
+
+        def coarse_now() -> float:
+            state["n"] += 1
+            if state["n"] % 3 == 0:
+                state["v"] += 0.015625  # 15.625 ms，正是 3.10/Windows 的粒度
+            return state["v"]
+
+        monkeypatch.setattr(bus_module, "clock_now", coarse_now)
+
+        for i in range(12):
+            bus.send(FrameSpec(id=0x400 + i, data="01"))
+
+        # RX 线程是异步的，等回环帧落地再取历史，避免读到半截。
+        deadline = time.time() + 2.0
+        while time.time() < deadline and bus.snapshot_stats().rx_frames < 12:
+            time.sleep(0.01)
+
+        history = bus.history(limit=100)
+        ids = [m.arbitration_id for m in history]
+        expected = [0x400 + i for i in range(12)] * 2
+        assert ids == expected, (
+            f"粗时钟下顺序错乱：\n  实际 {[hex(i) for i in ids]}\n  期望 {[hex(i) for i in expected]}"
+        )
+        stamps = [m.timestamp for m in history]
+        assert len(set(stamps)) == len(stamps), "粗时钟下的同刻帧没有被区分开"
+
 
 class TestLifecycle:
     def test_close_removes_session(self, manager, bus) -> None:

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import threading
 import time
 from collections import deque
@@ -23,6 +24,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 import can
 
 from .backends import open_bus
+from .clock import now as clock_now
 from .cyclic import CyclicManager, CyclicTask
 from .errors import (
     BadRequest,
@@ -135,6 +137,9 @@ class BusSession:
         self._last_poll = 0.0
         # 驱动时间戳与系统墙钟的偏移，首帧标定（见 _normalize_ts）
         self._ts_offset: Optional[float] = None
+        # 本会话已发出的最大时间戳。见 _stamp()：保证收发两侧的时间戳严格递增，
+        # 否则同一时刻的多帧在 history() 里顺序随机。
+        self._last_stamp = 0.0
 
         self._stop = threading.Event()
         self._on_frame_cb = on_frame
@@ -201,13 +206,15 @@ class BusSession:
         if not self._pass_filters(msg):
             return
 
-        now = time.time()
+        now = clock_now()
         # 进到这里的帧必然是收来的，显式打标。
         # 不能指望后端自己设：PCAN 会设，但 virtual 后端是把发送方的 Message
         # 对象直接广播出去，is_rx 还是 False，于是「统计说收到了、载荷说是我发的」。
         msg.is_rx = True
-        self._normalize_ts(msg, now)
         with self._lock:
+            # 归一化必须在锁内：它内部的 _stamp 读改写 _last_stamp，与 transmit()
+            # 共用同一个计数器，锁外调用会让两边的递增保证同时失效。
+            self._normalize_ts(msg, now)
             self._seq += 1
             self._frames.append((self._seq, msg))
             if msg.is_error_frame:
@@ -233,11 +240,34 @@ class BusSession:
     # 驱动时间戳与墙钟偏差超过这个值就重新标定（驱动复位、系统改时间）
     _TS_RESYNC_S = 5.0
 
+    def _stamp(self, ts: float) -> float:
+        """把时间戳推进到严格大于上一帧的值，返回最终写入的时间戳。
+
+        为什么必须有这一步：``history()`` 把 RX 和 TX 合并后按 timestamp 排序，
+        排序的前提是「到达顺序 == 时间戳顺序」。一旦两帧拿到**完全相同**的时间戳，
+        稳定排序只会保留列表拼接顺序，而拼接是 RX 在前、TX 在后——于是后发的 RX
+        帧反而排到了先发的 TX 帧前面，"先发后收"被读成"先收后发"。
+
+        什么时候会撞到同一个值：
+        - Python 3.10 及更早在 Windows 上，``time.time()`` 只有 15.625 ms 粒度；
+        - 驱动侧时间戳本身是整毫秒（部分 USB-CAN 分析仪如此）；
+        - 回放时按文件里的原始时间戳快速连发。
+
+        所以在锁内做一次 clamp：不相等就照原值，相等或倒退就抬到上一帧 + 1 µs。
+        1 µs 远小于 CAN 的最小帧间隔（1 Mbps 下一帧最少约 47 µs），既不会
+        伪造出物理上不可能的间隔，又能把顺序固定下来。这一微调只影响
+        「同一时刻的多帧」这个退化场景，正常时序下时间戳原样保留。
+        """
+        if ts <= self._last_stamp:
+            ts = self._last_stamp + 1e-6
+        self._last_stamp = ts
+        return ts
+
     def _normalize_ts(self, msg: can.Message, now: float) -> None:
         """把驱动给的接收时间戳统一到系统墙钟。
 
         为什么必须做：PCAN 这类驱动给的是**开机相对时间**（实测 7667 s），
-        而发送帧用的是 ``time.time()``（1.79e9），两个时钟域混一起就会出连锁问题——
+        而发送帧用的是墙钟（1.79e9），两个时钟域混一起就会出连锁问题——
         ``history()`` 合并收发后排序全乱、``frames?since=`` 过滤把接收帧全丢掉、
         录制回放算出来的帧间隔毫无意义。
 
@@ -245,12 +275,12 @@ class BusSession:
         又让绝对时刻能和墙钟对齐。偏移失配超过 5 秒视为标定失效，重新标定。
         """
         raw = getattr(msg, "timestamp", None)
-        if not raw or raw <= 0:
-            msg.timestamp = now
+        if not raw or raw <= 0 or not math.isfinite(raw):
+            msg.timestamp = self._stamp(now)
             return
         if self._ts_offset is None or abs(raw + self._ts_offset - now) > self._TS_RESYNC_S:
             self._ts_offset = now - raw
-        msg.timestamp = raw + self._ts_offset
+        msg.timestamp = self._stamp(raw + self._ts_offset)
 
     @staticmethod
     def _describe_error(msg: can.Message) -> str:
@@ -258,7 +288,7 @@ class BusSession:
         return text.strip() or "error frame"
 
     def _poll_state(self) -> None:
-        now = time.time()
+        now = clock_now()
         if now - self._last_poll < 1.0:
             return
         self._last_poll = now
@@ -340,9 +370,12 @@ class BusSession:
                 self._stats.last_error = str(exc)
             raise SendFailed(f"发送失败（ID {msg.arbitration_id:#x}）：{exc}") from exc
 
-        now = time.time()
-        msg.timestamp = now
+        now = clock_now()
         with self._lock:
+            # 时间戳在锁内定值：_stamp 依赖 _last_stamp，收发两个线程都会调它，
+            # 在锁外算会和 RX 线程抢同一个计数器，反而破坏单调性。
+            now = self._stamp(now)
+            msg.timestamp = now
             self._stats.tx_frames += 1
             self._stats.tx_bytes += len(msg.data or b"")
             self._stats.tx_ts.append(now)
@@ -383,7 +416,9 @@ class BusSession:
         matcher: Optional[FrameMatcher] = None,
     ) -> List[can.Message]:
         """消费式读取：只返回游标之后的新帧（仅 RX 方向）。"""
-        deadline = time.time() + timeout_s
+        # 超时用 perf_counter 而不是墙钟：墙钟会被系统改时间影响，且 3.10/Windows 上
+        # 粒度只有 15.6 ms——设 10 ms 超时实际会等 15.6 ms 以上。
+        deadline = time.perf_counter() + timeout_s
         out: List[can.Message] = []
         with self._condition:
             while len(out) < count:
@@ -396,7 +431,7 @@ class BusSession:
                         break
                 if len(out) >= count:
                     break
-                remain = deadline - time.time()
+                remain = deadline - time.perf_counter()
                 if remain <= 0:
                     break
                 self._condition.wait(min(remain, 0.05))
@@ -494,6 +529,9 @@ class BusSession:
         with self._lock:
             rx_tail = list(islice(self._frames, max(0, len(self._frames) - limit), None))
             tx_tail = list(islice(self._tx_log, max(0, len(self._tx_log) - limit), None))
+        # 按时间戳排序成立的**前提**是同一会话内时间戳严格递增——由 _stamp() 保证
+        # （收发两侧都在锁内过一遍 clamp）。这里不再另设序号做第二排序键：
+        # 时间戳唯一时它就是全序，多一个键反而会掩盖 _stamp 失效的事实。
         merged = [msg for _seq, msg in rx_tail] + tx_tail
         merged.sort(key=lambda m: m.timestamp or 0.0)
 
@@ -516,7 +554,7 @@ class BusSession:
             return "unknown"
 
     def snapshot_stats(self) -> BusStats:
-        now = time.time()
+        now = clock_now()
         cutoff = now - 1.0
         with self._lock:
             self._stats.prune(cutoff)
@@ -544,7 +582,7 @@ class BusSession:
             channel=self.channel,
             state=self.state(),
             opened_at=self.opened_at,
-            uptime_s=round(time.time() - self.opened_at, 3),
+            uptime_s=round(clock_now() - self.opened_at, 3),
             config=self.config,
             timing=self.meta.get("timing") or {},
             data_timing=self.meta.get("data_timing"),
