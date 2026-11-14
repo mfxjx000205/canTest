@@ -33,6 +33,16 @@ python -m venv .venv
 .venv\Scripts\python -m cantest serve      # 起服务，默认 127.0.0.1:8700
 ```
 
+Windows 上不想敲命令，双击仓库根目录的 `start-cantest.bat` 就行：它自己建 `.venv`、
+装依赖、探一遍后端、挑空闲端口并打开控制台。参数与上面的命令一一对应：
+
+```
+start-cantest.bat          # 自动挑端口并打开浏览器
+start-cantest.bat 8710     # 固定端口
+start-cantest.bat probe    # 只做硬件自检，不起服务
+start-cantest.bat reset    # 删掉 .venv 重来（依赖装坏了时用）
+```
+
 `probe` 的输出就是你排障的第一现场：
 
 ```
@@ -616,6 +626,7 @@ cantest/
 │   └── index.html 单页控制台（原生 JS，零依赖，无构建步骤）
 └── __main__.py    CLI：serve / probe
 
+start-cantest.bat    Windows 一键启动（自建 .venv、装依赖、挑端口、开浏览器）
 scripts/ui_smoke.py  前端的接口契约冒烟（8 步走完连接→收发→录波→回放→过滤）
 ```
 

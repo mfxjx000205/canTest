@@ -6,3 +6,8 @@
 *.png binary
 *.jpg binary
 *.ico binary
+
+# Windows 批处理必须是 CRLF。cmd.exe 对只有 LF 的 .bat 会解析失败：
+# 括号块和 goto 标签都会错位。规则写在 * eol=lf 之后，靠"后者优先"覆盖掉它。
+*.bat text eol=crlf
+*.cmd text eol=crlf
