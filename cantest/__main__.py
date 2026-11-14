@@ -9,9 +9,11 @@ from typing import List, Optional
 
 
 def _cmd_probe(as_json: bool) -> int:
+    from . import clock
     from .backends import probe
 
     result = probe()
+    result["clock"] = clock.describe()
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
@@ -19,6 +21,20 @@ def _cmd_probe(as_json: bool) -> int:
     print(f"平台        : {result['platform']}  (Python {result['python']})")
     print(f"python-can  : {result['python_can']}")
     print(f"默认后端    : {result['default_interface']}")
+    clk = result["clock"]
+    # 帧时间戳走 clock.now()，分辨率来自 perf_counter（100 ns），不受
+    # time.time() 的粗细影响，所以这里如实报两条：一条是实际拿到的精度，
+    # 一条是系统墙钟本身的精度（后者只是信息，不影响帧间隔）。
+    src_ns = clk["effective_resolution_ns"]
+    print(f"帧时间戳    : {src_ns} ns  (perf_counter)")
+    if clk["coarse"]:
+        print(
+            f"系统墙钟    : {clk['wall_clock_resolution_ns'] // 1_000_000} ms —— 偏粗"
+        )
+        print("              帧间隔测量已用高精度时钟兜住；如需墙钟本身也精确，")
+        print("              换 Python 3.11+（Windows 上是 100 ns 计时器）。")
+    else:
+        print(f"系统墙钟    : {clk['wall_clock_resolution_ns']} ns")
     if result.get("dlls"):
         print("驱动 DLL    :")
         for name, present in result["dlls"].items():

@@ -241,8 +241,8 @@ curl -s -X POST .../buses/B/expect -d '{"can_id":"0x18FF50E5","timeout_ms":1000}
 最终统计在**停止接口的响应体**里返回（`finished` 字段）。`GET` 只列还活着的，不会挂着一条
 「已停止」的任务误导你。
 
-**6. 时间戳统一是墙钟（epoch 秒）。** 这条踩得很疼：PCAN 驱动给的接收时间戳是
-**开机相对时间**（实测 `7667.5`，不是 epoch），而发送侧是 `time.time()`（`1.79e9`）。
+**6. 时间戳统一是墙钟（epoch 秒），且严格递增。** 这条踩得很疼：PCAN 驱动给的接收
+时间戳是**开机相对时间**（实测 `7667.5`，不是 epoch），而发送侧是 `time.time()`（`1.79e9`）。
 两个时钟域混在一起，症状全是「看起来对、其实错」——`history()` 合并收发后
 「先发后收」被读成「先收后发」、`/frames?since=<epoch>` 把接收帧全过滤掉、
 录制回放的帧间隔失真。所以：
@@ -252,6 +252,10 @@ curl -s -X POST .../buses/B/expect -d '{"can_id":"0x18FF50E5","timeout_ms":1000}
 - 发送帧（含周期发送、**回放**）的时间戳一律是**实际发出时刻**。
   回放要还原的是帧间隔（来自文件里的原始时间戳），不是绝对时刻——
   沿用旧时间戳会让刚回放的帧在 `?since=` 里查不到。
+- **收发两侧的时间戳都过一遍严格递增钳位**（同刻则顺延 1 µs）。1 µs 远小于
+  CAN 最小帧间隔（1 Mbps 下约 47 µs），不影响任何真实间隔，但能保证
+  `history()` 的排序是全序——否则同一时刻的多帧在稳定排序下 RX 会压住 TX，
+  「先发后收」又被读成「先收后发」。驱动给重复时间戳、时钟回拨时同理兜住。
 - `bus_load` 是 `0~1` 的**比例**（`0.076` = 7.6%），不是百分数。
 
 **7. 过滤不追溯历史。** `PUT /filters` 只影响**之后到达**的帧，缓冲区里已有的帧照旧在，
@@ -502,7 +506,7 @@ Linux 走 socketCAN。平台侧可以先查 `/buses/{id}/capabilities` 再决定
 ## 测试
 
 ```bash
-# 无硬件，195 例通过（真实硬件用例 14 例 skip），约 23 秒
+# 无硬件，208 例通过（真实硬件用例 14 例 skip），约 26 秒
 .venv\Scripts\python -m pytest tests -q
 ```
 
@@ -536,16 +540,41 @@ Linux 把 `.venv\Scripts\python` 换成 `.venv/bin/python` 即可。
 - `tests/test_timing.py`：位定时求解的不变式（`brp × tq_total` 必须等于一个位的时钟数）
 - `tests/test_frame.py` / `test_models.py`：数据编解码、帧匹配、请求模型边界
 - `tests/test_bus_virtual.py`：virtual 后端端到端（收发、expect、transact、周期、录制回放）
+- `tests/test_clock.py`：高精度墙钟的精度/单调性/重校准（含「拿 `time.time()` 顶替会变红」的反证）
 - `tests/test_api.py`：走真实 ASGI，把依赖注入、422 校验、异常→状态码映射一起验掉
 - `tests/test_hw_pcan.py`：真实硬件，默认 skip
 
 ### 实测结果（PCAN-USB Pro FD / 1 Mbps / 80 MHz）
 
 ```
-$ python -m pytest tests -q                          → 195 passed, 14 skipped in 23.33s
+$ python -m pytest tests -q                          → 208 passed, 14 skipped in 25.94s
 $ CANTEST_HW=1 python -m pytest tests/test_hw_pcan.py -v
                                                      → 12 passed, 2 skipped in 4.34s
 ```
+
+### 帧时间戳精度（本机 Python 3.10.8 / Windows 实测）
+
+Python ≤3.10 在 Windows 上 `time.time()` 走 `GetSystemTimeAsFileTime()`，粒度 **15.6 ms**；
+3.11+ 才换成 `GetSystemTimePreciseAsFileTime()`（~100 ns）。但 `perf_counter` 在 3.10 上
+就已经是 `QueryPerformanceCounter`（100 ns），所以精度**不必靠升级解释器**：
+
+```
+5000 次连续取值的不同值个数 / 最小步进
+  time.time()      →    1 个 /  0 ns
+  perf_counter()   → 3326 个 / 100 ns
+```
+
+`cantest.clock` 的做法是采样 `perf_counter`（精确、单调）、锚定到 `time.time()`（epoch 语义），
+10 秒重锚定一次 → 既有 epoch 语义又有 100 ns 分辨率。**帧间隔测量直接受益**。
+`/info` 的 `clock` 字段和 `python -m cantest probe` 都会如实报出这条：
+`帧时间戳 : 100 ns (perf_counter)` / `系统墙钟 : 15 ms —— 偏粗`。
+
+精度只是第一层。**排序正确性另有一道钳位**:收发两侧的时间戳都会在锁内被推进到
+「严格大于上一帧」（同刻则顺延 1 µs），因此即使底层时钟真的粗到 15.6 ms、或驱动
+给了重复/回退的时间戳，`history()` 的排序依然成立。这道钳位有专门的用例
+（`test_coarse_clock_still_orders_frames`，把时钟 monkeypatch 成 15.625 ms 才真正触发），
+并且做过反证——把钳位换成空实现后该用例立刻变红。前 3 个时间戳用例在本机**抓不到**
+这个 bug（真实时钟已经足够细），这一点也是反证时发现的。
 
 监听链路上的真实数据：3 秒收到 **1489 帧**（496 fps），11 个唯一 ID，全部扩展帧、DLC 8，
 错误帧 0、bus-off 0、`last_error` 空，状态 `ACTIVE`。**位定时算错是不可能收到这些帧的**，
@@ -576,6 +605,7 @@ cantest/
 ├── models.py      pydantic 请求/响应模型（帧、过滤、配置、统计）
 ├── errors.py      统一错误类型 → HTTP 状态码
 ├── backends.py    后端探测、通道枚举、参数装配、打开总线
+├── clock.py       高精度墙钟（perf_counter 采样 + 墙钟锚定，100 ns）
 ├── bus.py         BusSession：RX 线程 + 环形缓冲 + 统计 + 断言等待
 ├── cyclic.py      周期发送（粗睡 + 自旋，亚毫秒抖动）
 ├── recorder.py    录制 / 回放（jsonl、csv、asc、blf）
@@ -590,4 +620,5 @@ scripts/ui_smoke.py  前端的接口契约冒烟（8 步走完连接→收发→
 ```
 
 关键设计只有两条：**RX 线程独占阻塞 `recv()`**（绝不进事件循环），
-以及**断言用序号而不是时间戳**（时间戳有精度和时钟漂移问题，序号是单调的）。
+以及**断言用序号而不是时间戳**（序号是会话内绝对单调的整数，不受系统改时间影响；
+时间戳虽然经 `clock.py` 提到 100 ns、且强制严格递增，但仍是浮点数，跨会话比对没有意义）。

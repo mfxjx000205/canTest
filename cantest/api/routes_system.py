@@ -35,6 +35,8 @@ def health(hub: FrameHub = Depends(get_hub)) -> Dict[str, Any]:
 def info(manager: BusManager = Depends(get_manager)) -> Dict[str, Any]:
     import can
 
+    from .. import clock
+
     return ok(
         {
             "version": __version__,
@@ -44,6 +46,9 @@ def info(manager: BusManager = Depends(get_manager)) -> Dict[str, Any]:
             "default_interface": default_interface(),
             "open_buses": len(manager.list()),
             "capabilities": BACKEND_CAPS,
+            # 帧时间戳实际用哪个时钟、能分到多细。Python 3.10/Windows 的
+            # time.time() 只有 15.6 ms，这项会如实报出来。
+            "clock": clock.describe(),
         }
     )
 
